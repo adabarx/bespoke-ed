@@ -1,21 +1,28 @@
-use crossterm::event;
-use anyhow::{anyhow, bail, Result};
+use std::time::Instant;
+use std::time::Duration;
+use std::thread;
+
+use crossbeam_channel::{unbounded, Sender, Receiver};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use anyhow::Result;
 use ratatui::{widgets::Paragraph, Frame};
 
-#[derive(Debug, Default)]
+mod tui;
+
+#[derive(Debug, Default, Clone, Copy)]
 struct Model {
     counter: isize,
     app_state: AppState
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
 enum AppState {
     #[default]
     Running,
     Stop
 }
 
-enum Msg {
+pub enum Msg {
     Increment,
     Decrement,
     Reset,
@@ -32,84 +39,99 @@ fn update(mut model: Model, msg: Msg) -> Model{
     model
 }
 
-fn view(model: &Model, frame: &mut Frame) {
+fn view(model: Model, frame: &mut Frame) {
     frame.render_widget(
         Paragraph::new(format!("Counter: {}", model.counter)),
         frame.size(),
     )
 }
 
-fn handle_events() -> Result<Msg> {
-    if event::poll(std::time::Duration::from_millis(4))? {
-        if let event::Event::Key(key) = event::read()? {
-            if key.kind == event::KeyEventKind::Press {
-                return match key.code {
-                    event::KeyCode::Char('j') => Ok(Msg::Increment),
-                    event::KeyCode::Char('k') => Ok(Msg::Decrement),
-                    event::KeyCode::Char('r') => Ok(Msg::Reset),
-                    event::KeyCode::Char('q') => Ok(Msg::Quit),
-                    _ => bail!("no matching key")
-                }
-            }
+fn handle_keys(key: KeyEvent) -> Option<Msg> {
+    match key.kind {
+        KeyEventKind::Press => match key.code {
+            KeyCode::Char('j') => Some(Msg::Increment),
+            KeyCode::Char('k') => Some(Msg::Decrement),
+            KeyCode::Char('r') => Some(Msg::Reset),
+            KeyCode::Char('q') => Some(Msg::Quit),
+            _ => None,
+        },
+        KeyEventKind::Repeat => None,
+        KeyEventKind::Release => None,
+    }
+}
+
+fn handle_events(input: Event) -> Option<Msg> {
+    match input {
+        Event::Key(key) => handle_keys(key),
+        _ => None,
+    }
+}
+
+fn view_handler(
+    view_rx: Receiver<Model>,
+    quit_rx: Receiver<Msg>,
+    tick_rate: Duration,
+) -> Result<()> {
+    let mut terminal = tui::init_app()?;
+    let mut last_tick = Instant::now();
+    loop {
+        if quit_rx.try_recv().is_ok() { break }
+
+        let elapsed = last_tick.elapsed();
+        if elapsed < tick_rate {
+            thread::sleep(tick_rate - elapsed);
+        }
+        last_tick = Instant::now();
+
+        // draw
+        while let Ok(model) = view_rx.try_recv() {
+            terminal.draw(|f| view(model, f))?;
         }
     }
-    Err(anyhow!("no event"))
+    tui::teardown_app()?;
+    Ok(())
 }
 
 fn main() -> Result<()> {
     tui::install_panic_hook();
 
-    let mut terminal = tui::init_app()?;
+    let tick_rate = Duration::from_millis(16);
 
+    let (view_tx, view_rx) = unbounded::<Model>();
+    let (input_tx, input_rx) = unbounded::<Event>();
+    let (quit_tx, quit_rx) = unbounded::<Msg>();
+
+    let quit_rx_input = quit_rx.clone();
+    let quit_rx_view = quit_rx.clone();
+    thread::spawn(move || tui::input_listener(input_tx, quit_rx_input, tick_rate));
+    thread::spawn(move || view_handler(view_rx, quit_rx_view, tick_rate));
+
+    // set up and initial draw
     let mut model = Model::default();
+    view_tx.send(model)?;
 
-    while model.app_state == AppState::Running {
-        terminal.draw(|f| view(&model, f))?;
-        
-        let msg = handle_events();
+    let mut last_tick = Instant::now();
+    loop {
+        let elapsed = last_tick.elapsed();
+        if elapsed < tick_rate {
+            thread::sleep(tick_rate - elapsed);
+        }
+        last_tick = Instant::now();
 
-        if let Ok(msg) = msg {
-            model = update(model, msg);
+        // handle input
+        while let Ok(input) = input_rx.try_recv() {
+            if let Some(msg) = handle_events(input) {
+                model = update(model, msg);
+                view_tx.send(model)?;
+            }
+        }
+
+        if model.app_state == AppState::Stop {
+            quit_tx.send(Msg::Quit)?;
+            break;
         }
     }
 
     tui::teardown_app()
 }
 
-mod tui {
-    use crossterm::{
-        terminal::{
-            disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
-            LeaveAlternateScreen,
-        },
-        ExecutableCommand,
-    };
-    use ratatui::{
-        backend::Backend, prelude::{CrosstermBackend, Terminal},
-    };
-    use std::{io::stdout, panic};
-    use anyhow::{Ok, Result};
-
-    pub fn init_app() -> Result<Terminal<impl Backend>> {
-        stdout().execute(EnterAlternateScreen)?;
-        enable_raw_mode()?;
-        let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-        terminal.clear()?;
-        Ok(terminal)
-    }
-
-    pub fn teardown_app() -> Result<()> {
-        stdout().execute(LeaveAlternateScreen)?;
-        disable_raw_mode()?;
-        Ok(())
-    }
-
-    pub fn install_panic_hook() {
-        let original_hook = panic::take_hook();
-        panic::set_hook(Box::new(move |panic_info| {
-            stdout().execute(LeaveAlternateScreen).unwrap();
-            disable_raw_mode().unwrap();
-            original_hook(panic_info);
-        }));
-    }
-}
