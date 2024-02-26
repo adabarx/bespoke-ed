@@ -77,11 +77,7 @@ fn view_handler(
     loop {
         if quit_rx.try_recv().is_ok() { break }
 
-        let elapsed = last_tick.elapsed();
-        if elapsed < tick_rate {
-            thread::sleep(tick_rate - elapsed);
-        }
-        last_tick = Instant::now();
+        last_tick = timeout_sleep(tick_rate, last_tick);
 
         // draw
         while let Ok(model) = view_rx.try_recv() {
@@ -90,6 +86,12 @@ fn view_handler(
     }
     tui::teardown_app()?;
     Ok(())
+}
+
+pub fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
+    let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+    if !timeout.is_zero() { thread::sleep(timeout); }
+    Instant::now()
 }
 
 fn main() -> Result<()> {
@@ -112,11 +114,7 @@ fn main() -> Result<()> {
 
     let mut last_tick = Instant::now();
     loop {
-        let elapsed = last_tick.elapsed();
-        if elapsed < tick_rate {
-            thread::sleep(tick_rate - elapsed);
-        }
-        last_tick = Instant::now();
+        last_tick = timeout_sleep(tick_rate, last_tick);
 
         // handle input
         while let Ok(input) = input_rx.try_recv() {
