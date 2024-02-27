@@ -9,4 +9,5 @@ edition = "2021"
 anyhow = "1.0.80"
 crossbeam-channel = "0.5.11"
 crossterm = "0.27.0"
+dyn-clone = "1.0.17"
 ratatui = { version = "0.26.1", features = ["serde"] }
