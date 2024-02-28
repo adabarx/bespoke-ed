@@ -57,7 +57,7 @@ impl WindowTree {
             WindowTree::Root { children } => {
                 WidgetTree::Root { 
                     children: children.iter()
-                        .map(|c| (*c).send())
+                        .map(|c| c.send())
                         .collect()
                 }
             },
@@ -65,7 +65,7 @@ impl WindowTree {
                 WidgetTree::Node {
                     widget: widget.clone(),
                     children: children.iter()
-                        .map(|c| (*c).send())
+                        .map(|c| c.send())
                         .collect()
                 }
             },
@@ -87,6 +87,11 @@ struct Zipper {
     children: Vec<Rc<WindowTree>>
 }
 
+enum ZipperMoveResult {
+    Just(Zipper),
+    Nil(Zipper)
+}
+
 impl Zipper {
     pub fn new(window: Rc<WindowTree>) -> Self {
         Self {
@@ -98,15 +103,47 @@ impl Zipper {
         }
     }
 
-    pub fn focus_child(self, index: usize) -> Option<Zipper> {
-        if index >= self.children.len() { return None };
+    pub fn focus_child(self, index: usize) -> ZipperMoveResult {
+        if self.children.len() == 0 { return ZipperMoveResult::Nil(self) };
+        if index >= self.children.len() { return ZipperMoveResult::Nil(self) };
 
         let left = self.children[0..index].iter().cloned().collect();
         let right = self.children[index + 1..].iter().cloned().collect();
         let focus = self.children[index].clone();
         let children = focus.children();
 
-        Some(Zipper { path: Box::new(Some(self)), focus, left, right, children })
+        ZipperMoveResult::Just(
+            Zipper { path: Box::new(Some(self)), focus, left, right, children })
+    }
+
+    pub fn focus_left(self) -> ZipperMoveResult {
+        if self.left.len() == 0 { ZipperMoveResult::Nil(self) }
+        else {
+            let mut right = vec![self.focus.clone()];
+            right.append(&mut self.right.iter().cloned().collect::<Vec<Rc<WindowTree>>>());
+
+            let mut left: Vec<Rc<WindowTree>> = self.left.iter().cloned().collect();
+            let focus = left.pop().unwrap();
+
+            let children = focus.children();
+            ZipperMoveResult::Just(
+                Zipper { path: Box::new(Some(self)), focus, left, right, children })
+        }
+    }
+
+    pub fn focus_right(self) -> ZipperMoveResult {
+        if self.right.len() == 0 { ZipperMoveResult::Nil(self) }
+        else {
+            let mut left = vec![self.focus.clone()];
+            left.append(&mut self.left.iter().cloned().collect::<Vec<Rc<WindowTree>>>());
+
+            let right: Vec<Rc<WindowTree>> = self.right[1..].iter().cloned().collect();
+            let focus = self.right[0].clone();
+
+            let children = focus.children();
+            ZipperMoveResult::Just(
+                Zipper { path: Box::new(Some(self)), focus, left, right, children })
+        }
     }
 }
 
