@@ -88,7 +88,7 @@ struct Zipper {
 }
 
 enum ZipperMoveResult {
-    Just(Zipper),
+    Success(Zipper),
     Nil(Zipper)
 }
 
@@ -112,7 +112,7 @@ impl Zipper {
         let focus = self.children[index].clone();
         let children = focus.children();
 
-        ZipperMoveResult::Just(
+        ZipperMoveResult::Success(
             Zipper { path: Box::new(Some(self)), focus, left, right, children })
     }
 
@@ -126,7 +126,7 @@ impl Zipper {
             let focus = left.pop().unwrap();
 
             let children = focus.children();
-            ZipperMoveResult::Just(
+            ZipperMoveResult::Success(
                 Zipper { path: Box::new(Some(self)), focus, left, right, children })
         }
     }
@@ -141,7 +141,7 @@ impl Zipper {
             let focus = self.right[0].clone();
 
             let children = focus.children();
-            ZipperMoveResult::Just(
+            ZipperMoveResult::Success(
                 Zipper { path: Box::new(Some(self)), focus, left, right, children })
         }
     }
