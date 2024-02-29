@@ -1,13 +1,15 @@
 #![allow(dead_code)]
+use std::sync::mpsc::{self, Receiver as ViewReciever};
 use std::fmt::Debug;
-use std::rc::Rc;
 use std::time::{Instant, Duration};
-use std::thread;
+use std::{thread, usize};
 
 use crossbeam_channel::{unbounded, Receiver};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use anyhow::Result;
 use dyn_clone::DynClone;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
 use ratatui::{
     widgets::{Paragraph, Widget},
     Frame
@@ -15,7 +17,7 @@ use ratatui::{
 
 mod tui;
 
-trait RenderSend: Widget + DynClone + Send + Sync {}
+trait RenderSend: Widget + DynClone + Send {}
 
 impl Clone for Box<dyn RenderSend> {
     fn clone(&self) -> Self {
@@ -23,52 +25,22 @@ impl Clone for Box<dyn RenderSend> {
     }
 }
 
-enum WidgetTree {
-    Root {
-        children: Vec<WidgetTree>
-    },
-    Node {
-        widget: Box<dyn RenderSend>,
-        children: Vec<WidgetTree>
-    }
-}
-
 #[derive(Clone)]
 enum WindowTree{
     Root {
-        children: Vec<Rc<WindowTree>>
+        children: Vec<WindowTree>
     },
     Node {
         widget: Box<dyn RenderSend>,
-        children: Vec<Rc<WindowTree>>
+        children: Vec<WindowTree>
     }
 }
 
 impl WindowTree {
-    pub fn children(&self) -> Vec<Rc<WindowTree>> {
+    pub fn children_refs(&self) -> Vec<&WindowTree> {
         match self {
-            WindowTree::Root { children } => children.iter().cloned().collect(),
-            WindowTree::Node { children, .. } => children.iter().cloned().collect(),
-        }
-    }
-
-    pub fn send(&self) -> WidgetTree {
-        match self {
-            WindowTree::Root { children } => {
-                WidgetTree::Root { 
-                    children: children.iter()
-                        .map(|c| c.send())
-                        .collect()
-                }
-            },
-            WindowTree::Node { children, widget } => {
-                WidgetTree::Node {
-                    widget: widget.clone(),
-                    children: children.iter()
-                        .map(|c| c.send())
-                        .collect()
-                }
-            },
+            WindowTree::Root { children } => children.iter().collect(),
+            WindowTree::Node { children, .. } => children.iter().collect(),
         }
     }
 }
@@ -79,70 +51,30 @@ impl Default for WindowTree {
     }
 }
 
-struct Zipper {
-    path: Box<Option<Zipper>>,
-    focus: Rc<WindowTree>,
-    left: Vec<Rc<WindowTree>>,
-    right: Vec<Rc<WindowTree>>,
-    children: Vec<Rc<WindowTree>>
+enum SiblingStatus {
+    Free,
+    Taken
 }
 
-enum ZipperMoveResult {
-    Success(Zipper),
-    Nil(Zipper)
+struct Zipper<'a> {
+    path: Box<Option<Zipper<'a>>>,
+    focus: &'a mut WindowTree,
+    left: Vec<SiblingStatus>,
+    right: Vec<SiblingStatus>,
 }
 
-impl Zipper {
-    pub fn new(window: Rc<WindowTree>) -> Self {
+enum ZipperMoveResult<'a> {
+    Success(Zipper<'a>),
+    Nil(Zipper<'a>)
+}
+
+impl<'a> Zipper<'a> {
+    pub fn new(focus: &'a mut WindowTree) -> Self {
         Self {
             path: Box::new(None),
-            focus: window.clone(),
+            focus,
             left: Vec::new(),
             right: Vec::new(),
-            children: window.children()
-        }
-    }
-
-    pub fn focus_child(self, index: usize) -> ZipperMoveResult {
-        if self.children.len() == 0 { return ZipperMoveResult::Nil(self) };
-        if index >= self.children.len() { return ZipperMoveResult::Nil(self) };
-
-        let left = self.children[0..index].iter().cloned().collect();
-        let right = self.children[index + 1..].iter().cloned().collect();
-        let focus = self.children[index].clone();
-        let children = focus.children();
-
-        ZipperMoveResult::Success(
-            Zipper { path: Box::new(Some(self)), focus, left, right, children })
-    }
-
-    pub fn focus_left(self) -> ZipperMoveResult {
-        if self.left.len() == 0 { ZipperMoveResult::Nil(self) }
-        else {
-            let mut right = vec![self.focus.clone()];
-            right.append(&mut self.right.iter().cloned().collect::<Vec<Rc<WindowTree>>>());
-
-            let mut left: Vec<Rc<WindowTree>> = self.left.iter().cloned().collect();
-            let focus = left.pop().unwrap();
-
-            let children = focus.children();
-            ZipperMoveResult::Success(
-                Zipper { path: Box::new(Some(self)), focus, left, right, children })
-        }
-    }
-
-    pub fn focus_right(self) -> ZipperMoveResult {
-        if self.right.len() == 0 { ZipperMoveResult::Nil(self) }
-        else {
-            let mut left = vec![self.focus.clone()];
-            left.append(&mut self.left.iter().cloned().collect::<Vec<Rc<WindowTree>>>());
-
-            let right: Vec<Rc<WindowTree>> = self.right[1..].iter().cloned().collect();
-            let focus = self.right[0].clone();
-
-            let children = focus.children();
-            ZipperMoveResult::Success(
-                Zipper { path: Box::new(Some(self)), focus, left, right, children })
         }
     }
 }
@@ -168,6 +100,36 @@ pub enum Msg {
     Quit
 }
 
+struct FileExplorer; // this is next
+
+struct EditorWindow {
+    lines: Vec<EditorLine>,
+    // line number at top of screen
+    position: usize,
+}
+
+struct EditorLine {
+    characters: Vec<char>
+}
+
+impl Widget for EditorWindow {
+    fn render(self, area: Rect, buf: &mut Buffer)
+        where Self: Sized
+    {
+        for row in 0..area.height {
+            if let Some(textline) = self.lines.get(row as usize + self.position) {
+                let mut index: u16 = 0;
+                for ch in textline.characters.iter() {
+                    if area.x + index > area.x + area.width { break }
+                    buf.get_mut(area.x + index, area.y + row)
+                        .set_symbol(&ch.to_string());
+                    index += 1;
+                }
+            }
+        }
+    }
+}
+
 fn update(mut model: Model, msg: Msg) -> Model{
     match msg {
         Msg::Increment => model.counter += 1,
@@ -178,7 +140,7 @@ fn update(mut model: Model, msg: Msg) -> Model{
     model
 }
 
-fn view(_tree: WidgetTree, frame: &mut Frame) {
+fn view(_tree: WindowTree, frame: &mut Frame) {
     frame.render_widget(
         Paragraph::new(format!("Counter: ")),
         frame.size(),
@@ -207,7 +169,7 @@ fn handle_events(input: Event) -> Option<Msg> {
 }
 
 fn view_handler(
-    view_rx: Receiver<WidgetTree>,
+    view_rx: ViewReciever<WindowTree>,
     quit_rx: Receiver<Msg>,
     tick_rate: Duration,
 ) -> Result<()> {
@@ -238,7 +200,7 @@ fn main() -> Result<()> {
 
     let tick_rate = Duration::from_millis(16);
 
-    let (view_tx, view_rx) = unbounded::<WidgetTree>();
+    let (view_tx, view_rx) = mpsc::channel::<WindowTree>();
     let (input_tx, input_rx) = unbounded::<Event>();
     let (quit_tx, quit_rx) = unbounded::<Msg>();
 
@@ -249,7 +211,7 @@ fn main() -> Result<()> {
 
     // set up and initial draw
     let mut model = Model::default();
-    view_tx.send(model.window.send())?;
+    view_tx.send(model.window.clone()).unwrap();
 
     let mut last_tick = Instant::now();
     loop {
@@ -259,7 +221,7 @@ fn main() -> Result<()> {
         while let Ok(input) = input_rx.try_recv() {
             if let Some(msg) = handle_events(input) {
                 model = update(model, msg);
-                view_tx.send(model.window.send())?;
+                view_tx.send(model.window.clone()).unwrap();
             }
         }
 
