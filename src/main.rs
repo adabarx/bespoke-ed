@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver as ViewReciever};
 use std::fmt::Debug;
 use std::time::{Instant, Duration};
@@ -7,23 +8,14 @@ use std::{thread, usize};
 use crossbeam_channel::{unbounded, Receiver};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use anyhow::Result;
-use dyn_clone::DynClone;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::Rect;
 use ratatui::{
-    widgets::{Paragraph, Widget},
+    widgets::{Paragraph, WidgetRef},
     Frame
 };
 
 mod tui;
-
-trait RenderSend: Widget + DynClone + Send {}
-
-impl Clone for Box<dyn RenderSend> {
-    fn clone(&self) -> Self {
-        dyn_clone::clone_box(&**self)
-    }
-}
 
 #[derive(Clone)]
 enum WindowTree{
@@ -31,17 +23,8 @@ enum WindowTree{
         children: Vec<WindowTree>
     },
     Node {
-        widget: Box<dyn RenderSend>,
+        // widget: Box<dyn RenderSend>,
         children: Vec<WindowTree>
-    }
-}
-
-impl WindowTree {
-    pub fn children_refs(&self) -> Vec<&WindowTree> {
-        match self {
-            WindowTree::Root { children } => children.iter().collect(),
-            WindowTree::Node { children, .. } => children.iter().collect(),
-        }
     }
 }
 
@@ -61,11 +44,6 @@ struct Zipper<'a> {
     focus: &'a mut WindowTree,
     left: Vec<SiblingStatus>,
     right: Vec<SiblingStatus>,
-}
-
-enum ZipperMoveResult<'a> {
-    Success(Zipper<'a>),
-    Nil(Zipper<'a>)
 }
 
 impl<'a> Zipper<'a> {
@@ -100,7 +78,12 @@ pub enum Msg {
     Quit
 }
 
-struct FileExplorer; // this is next
+struct FileExplorer {
+    path: PathBuf,
+    folders: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+    position: usize,
+}
 
 struct EditorWindow {
     lines: Vec<EditorLine>,
@@ -112,8 +95,28 @@ struct EditorLine {
     characters: Vec<char>
 }
 
-impl Widget for EditorWindow {
-    fn render(self, area: Rect, buf: &mut Buffer)
+enum AppMode {
+    Editor,
+    FileExplorer,
+}
+
+struct StatusBar {}
+
+struct Window {
+    status_bar: StatusBar,
+    windows: Vec<EditorWindow>,
+}
+
+struct FloatingWindow {}
+
+struct App {
+    mode: AppMode,
+    window: Window,
+    floating: FloatingWindow,
+}
+
+impl WidgetRef for EditorWindow {
+    fn render_ref(&self, area: Rect, buf: &mut Buffer)
         where Self: Sized
     {
         for row in 0..area.height {
