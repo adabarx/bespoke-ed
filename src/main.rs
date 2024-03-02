@@ -10,6 +10,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use anyhow::Result;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Widget};
 use ratatui::{
     widgets::{Paragraph, WidgetRef},
     Frame
@@ -85,16 +87,6 @@ struct FileExplorer {
     position: usize,
 }
 
-struct EditorWindow {
-    lines: Vec<EditorLine>,
-    // line number at top of screen
-    position: usize,
-}
-
-struct EditorLine {
-    characters: Vec<char>
-}
-
 enum AppMode {
     Editor,
     FileExplorer,
@@ -102,33 +94,112 @@ enum AppMode {
 
 struct StatusBar {}
 
-struct Window {
-    status_bar: StatusBar,
-    windows: Vec<EditorWindow>,
+enum Content {
+    Editor {
+        lines: Vec<EditorLine>,
+        // line number at top of screen
+        position: u32,
+    },
+    FileExplorer {
+        path: PathBuf,
+        files: Vec<PathBuf>,
+        folders: Vec<PathBuf>,
+    }
+}
+
+struct EditorLine {
+    characters: Vec<char>
 }
 
 struct FloatingWindow {}
 
 struct App {
     mode: AppMode,
-    window: Window,
+    window: Content,
     floating: FloatingWindow,
 }
 
-impl WidgetRef for EditorWindow {
+impl Widget for Content {
+    fn render(self, area: Rect, buf: &mut Buffer)
+        where Self: Sized
+    {
+        self.render_ref(area, buf);
+    }
+}
+
+impl WidgetRef for Content {
     fn render_ref(&self, area: Rect, buf: &mut Buffer)
         where Self: Sized
     {
-        for row in 0..area.height {
-            if let Some(textline) = self.lines.get(row as usize + self.position) {
-                let mut index: u16 = 0;
-                for ch in textline.characters.iter() {
-                    if area.x + index > area.x + area.width { break }
-                    buf.get_mut(area.x + index, area.y + row)
-                        .set_symbol(&ch.to_string());
-                    index += 1;
+        match self {
+            Content::Editor { lines, position } => {
+                for row in 0..area.height {
+                    if let Some(textline) = lines.get(row as usize + *position as usize) {
+                        let mut index: u16 = 0;
+                        for ch in textline.characters.iter() {
+                            if area.x + index > area.x + area.width { break }
+                            buf.get_mut(area.x + index, area.y + row)
+                                .set_symbol(&ch.to_string());
+                            index += 1;
+                        }
+                    }
                 }
+            },
+            Content::FileExplorer { path: _, files: _, folders: _ } => {
+                // let path_str = path.to_str().unwrap();
+                // Block::new()
             }
+        }
+    }
+}
+
+enum LayoutDirection {
+    Vertical,
+    Horizontal,
+}
+
+enum Layout {
+    Nested {
+        direction: LayoutDirection,
+        layouts: Vec<Layout>,
+    },
+    Content(Content),
+}
+
+impl WidgetRef for Layout {
+    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+        match self {
+            Layout::Content(content) => content.render_ref(area, buf),
+            Layout::Nested { direction, layouts } => {
+                let windows: u16 = layouts.len().try_into().unwrap();
+                if windows == 0 { return (); }
+                match direction {
+                    LayoutDirection::Vertical => {
+                        let offset = area.height / windows;
+                        layouts.iter().enumerate().for_each(|(i, layout)| {
+                            let area = Rect::new(
+                                area.x,
+                                if i == 0 { area.y } else { area.y + offset + 1 },
+                                area.width,
+                                offset
+                            );
+                            layout.render_ref(area, buf)
+                        });
+                    },
+                    LayoutDirection::Horizontal => {
+                        let offset = area.width / windows;
+                        layouts.iter().enumerate().for_each(|(i, layout)| {
+                            let area = Rect::new(
+                                if i == 0 { area.x } else { area.x + offset + 1 },
+                                area.y,
+                                offset,
+                                area.height,
+                            );
+                            layout.render_ref(area, buf)
+                        });
+                    },
+                }
+            },
         }
     }
 }
