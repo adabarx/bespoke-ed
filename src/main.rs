@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver as ViewReciever};
 use std::fmt::Debug;
 use std::time::{Instant, Duration};
-use std::{thread, usize};
+use std::{fs, thread, usize};
 
+use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use anyhow::Result;
@@ -19,51 +20,55 @@ use ratatui::{
 
 mod tui;
 
+#[derive(Parser, Debug)]
+struct CLI {
+    path: Option<PathBuf>,
+}
+
+// #[derive(Clone)]
+// enum WindowTree{
+//     Root {
+//         children: Vec<WindowTree>
+//     },
+//     Node {
+//         // widget: Box<dyn RenderSend>,
+//         children: Vec<WindowTree>
+//     }
+// }
+//
+// impl Default for WindowTree {
+//     fn default() -> Self {
+//         Self::Root { children: Vec::new() }
+//     }
+// }
+//
+// enum SiblingStatus {
+//     Free,
+//     Taken
+// }
+//
+// struct Zipper<'a> {
+//     path: Box<Option<Zipper<'a>>>,
+//     focus: &'a mut WindowTree,
+//     left: Vec<SiblingStatus>,
+//     right: Vec<SiblingStatus>,
+// }
+//
+// impl<'a> Zipper<'a> {
+//     pub fn new(focus: &'a mut WindowTree) -> Self {
+//         Self {
+//             path: Box::new(None),
+//             focus,
+//             left: Vec::new(),
+//             right: Vec::new(),
+//         }
+//     }
+// }
+
 #[derive(Clone)]
-enum WindowTree{
-    Root {
-        children: Vec<WindowTree>
-    },
-    Node {
-        // widget: Box<dyn RenderSend>,
-        children: Vec<WindowTree>
-    }
-}
-
-impl Default for WindowTree {
-    fn default() -> Self {
-        Self::Root { children: Vec::new() }
-    }
-}
-
-enum SiblingStatus {
-    Free,
-    Taken
-}
-
-struct Zipper<'a> {
-    path: Box<Option<Zipper<'a>>>,
-    focus: &'a mut WindowTree,
-    left: Vec<SiblingStatus>,
-    right: Vec<SiblingStatus>,
-}
-
-impl<'a> Zipper<'a> {
-    pub fn new(focus: &'a mut WindowTree) -> Self {
-        Self {
-            path: Box::new(None),
-            focus,
-            left: Vec::new(),
-            right: Vec::new(),
-        }
-    }
-}
-
-#[derive(Default, Clone)]
 struct Model {
-    counter: isize,
     app_state: AppState,
-    window: WindowTree,
+    window: Layout,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
@@ -94,6 +99,7 @@ enum AppMode {
 
 struct StatusBar {}
 
+#[derive(Clone)]
 enum Content {
     Editor {
         lines: Vec<EditorLine>,
@@ -107,16 +113,25 @@ enum Content {
     }
 }
 
+impl Content {
+    pub fn new_editor(content: String) -> Self {
+        Self::Editor {
+            position: 0,
+            lines: content.split('\n')
+                .map(|s| EditorLine { characters: s.chars().collect() })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct EditorLine {
     characters: Vec<char>
 }
 
-struct FloatingWindow {}
-
 struct App {
     mode: AppMode,
     window: Content,
-    floating: FloatingWindow,
 }
 
 impl Widget for Content {
@@ -153,11 +168,13 @@ impl WidgetRef for Content {
     }
 }
 
+#[derive(Clone)]
 enum LayoutDirection {
     Vertical,
     Horizontal,
 }
 
+#[derive(Clone)]
 enum Layout {
     Nested {
         direction: LayoutDirection,
@@ -206,17 +223,15 @@ impl WidgetRef for Layout {
 
 fn update(mut model: Model, msg: Msg) -> Model{
     match msg {
-        Msg::Increment => model.counter += 1,
-        Msg::Decrement => model.counter -= 1,
-        Msg::Reset => model.counter = 0,
         Msg::Quit => model.app_state = AppState::Stop,
+        _ => ()
     }
     model
 }
 
-fn view(_tree: WindowTree, frame: &mut Frame) {
+fn view(tree: Layout, frame: &mut Frame) {
     frame.render_widget(
-        Paragraph::new(format!("Counter: ")),
+        &tree,
         frame.size(),
     )
 }
@@ -243,7 +258,7 @@ fn handle_events(input: Event) -> Option<Msg> {
 }
 
 fn view_handler(
-    view_rx: ViewReciever<WindowTree>,
+    view_rx: ViewReciever<Layout>,
     quit_rx: Receiver<Msg>,
     tick_rate: Duration,
 ) -> Result<()> {
@@ -270,11 +285,14 @@ pub fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
 }
 
 fn main() -> Result<()> {
+    let path = CLI::parse().path.expect("File Required");
+    let content = fs::read_to_string(path).expect("File Doesn't Exist");
+
     tui::install_panic_hook();
 
     let tick_rate = Duration::from_millis(16);
 
-    let (view_tx, view_rx) = mpsc::channel::<WindowTree>();
+    let (view_tx, view_rx) = mpsc::channel::<Layout>();
     let (input_tx, input_rx) = unbounded::<Event>();
     let (quit_tx, quit_rx) = unbounded::<Msg>();
 
@@ -284,7 +302,10 @@ fn main() -> Result<()> {
     thread::spawn(move || view_handler(view_rx, quit_rx_view, tick_rate));
 
     // set up and initial draw
-    let mut model = Model::default();
+    let mut model = Model {
+        app_state: AppState::Running,
+        window: Layout::Content(Content::new_editor(content))
+    };
     view_tx.send(model.window.clone()).unwrap();
 
     let mut last_tick = Instant::now();
