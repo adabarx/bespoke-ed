@@ -11,10 +11,9 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use anyhow::Result;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListDirection, Widget};
 use ratatui::{
-    widgets::{Paragraph, WidgetRef},
+    widgets::WidgetRef,
     Frame
 };
 
@@ -92,11 +91,6 @@ struct FileExplorer {
     position: usize,
 }
 
-enum AppMode {
-    Editor,
-    FileExplorer,
-}
-
 struct StatusBar {}
 
 #[derive(Clone)]
@@ -108,8 +102,7 @@ enum Content {
     },
     FileExplorer {
         path: PathBuf,
-        files: Vec<PathBuf>,
-        folders: Vec<PathBuf>,
+        entries: Vec<PathBuf>,
     }
 }
 
@@ -122,23 +115,17 @@ impl Content {
                 .collect(),
         }
     }
-}
 
-#[derive(Clone)]
-struct EditorLine {
-    characters: Vec<char>
-}
+    pub fn new_file_explorer(path: PathBuf) -> Self {
+        let entries = fs::read_dir(path.clone())
+            .unwrap()
+            .filter_map(|dir| {
+                let d = dir.ok()?;
+                Some(d.path())
+            })
+            .collect();
 
-struct App {
-    mode: AppMode,
-    window: Content,
-}
-
-impl Widget for Content {
-    fn render(self, area: Rect, buf: &mut Buffer)
-        where Self: Sized
-    {
-        self.render_ref(area, buf);
+        Self::FileExplorer { path, entries }
     }
 }
 
@@ -160,11 +147,40 @@ impl WidgetRef for Content {
                     }
                 }
             },
-            Content::FileExplorer { path: _, files: _, folders: _ } => {
-                // let path_str = path.to_str().unwrap();
-                // Block::new()
+            Content::FileExplorer { path, entries } => {
+                let path_str = path.to_str().unwrap();
+                let block = Block::default()
+                    .title(path_str)
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded);
+
+                let list = List::new(entries.iter()
+                    .map(|p| p.to_str().unwrap())
+                    .collect::<Vec<&str>>()
+                );
+
+                list.block(block)
+                    .direction(ListDirection::TopToBottom)
+                    .render(area, buf);
             }
         }
+    }
+}
+
+#[derive(Clone)]
+struct EditorLine {
+    characters: Vec<char>
+}
+
+struct App {
+    window: Content,
+}
+
+impl Widget for Content {
+    fn render(self, area: Rect, buf: &mut Buffer)
+        where Self: Sized
+    {
+        self.render_ref(area, buf);
     }
 }
 
@@ -286,7 +302,7 @@ pub fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
 
 fn main() -> Result<()> {
     let path = CLI::parse().path.expect("File Required");
-    let content = fs::read_to_string(path).expect("File Doesn't Exist");
+    let content = fs::read_to_string(path.clone()).expect("File Doesn't Exist");
 
     tui::install_panic_hook();
 
@@ -301,10 +317,18 @@ fn main() -> Result<()> {
     thread::spawn(move || tui::input_listener(input_tx, quit_rx_input, tick_rate));
     thread::spawn(move || view_handler(view_rx, quit_rx_view, tick_rate));
 
+    let window = Layout::Nested {
+        direction: LayoutDirection::Horizontal,
+        layouts: vec![
+            Layout::Content(Content::new_editor(content)),
+            Layout::Content(Content::new_file_explorer(path.parent().unwrap().to_path_buf()))
+        ]
+    };
+
     // set up and initial draw
     let mut model = Model {
         app_state: AppState::Running,
-        window: Layout::Content(Content::new_editor(content))
+        window
     };
     view_tx.send(model.window.clone()).unwrap();
 
