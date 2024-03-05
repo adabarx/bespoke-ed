@@ -28,46 +28,6 @@ struct CLI {
     path: Option<PathBuf>,
 }
 
-// #[derive(Clone)]
-// enum WindowTree{
-//     Root {
-//         children: Vec<WindowTree>
-//     },
-//     Node {
-//         // widget: Box<dyn RenderSend>,
-//         children: Vec<WindowTree>
-//     }
-// }
-//
-// impl Default for WindowTree {
-//     fn default() -> Self {
-//         Self::Root { children: Vec::new() }
-//     }
-// }
-//
-// enum SiblingStatus {
-//     Free,
-//     Taken
-// }
-//
-// struct Zipper<'a> {
-//     path: Box<Option<Zipper<'a>>>,
-//     focus: &'a mut WindowTree,
-//     left: Vec<SiblingStatus>,
-//     right: Vec<SiblingStatus>,
-// }
-//
-// impl<'a> Zipper<'a> {
-//     pub fn new(focus: &'a mut WindowTree) -> Self {
-//         Self {
-//             path: Box::new(None),
-//             focus,
-//             left: Vec::new(),
-//             right: Vec::new(),
-//         }
-//     }
-// }
-
 #[derive(Clone)]
 struct Model<'a> {
     app_state: AppState,
@@ -216,7 +176,8 @@ enum ZipperMoveResult<'a> {
 
 struct Zipper<'a> {
     focus: Rc<RefCell<Layout<'a>>>,
-    parent: Option<Box<Zipper<'a>>>,
+    parent: Option<Rc<RefCell<Layout<'a>>>>,
+    previous: Option<Box<Zipper<'a>>>,
     children: Vec<Rc<RefCell<Layout<'a>>>>,
     left: Vec<Rc<RefCell<Layout<'a>>>>,
     right: Vec<Rc<RefCell<Layout<'a>>>>
@@ -232,14 +193,10 @@ impl<'a> Zipper<'a> {
             Layout::Content(_) => Vec::new(),
             Layout::Container { layouts, .. } => layouts.iter().cloned().collect(),
         };
+        let parent = Some(self.focus.clone());
+        let previous = Some(Box::new(self));
 
-        ZipperMoveResult::Success(Zipper {
-            focus,
-            parent: Some(Box::new(self)),
-            children,
-            left,
-            right
-        })
+        ZipperMoveResult::Success(Zipper { focus, parent, previous, children, left, right })
     }
 }
 
