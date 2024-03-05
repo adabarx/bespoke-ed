@@ -174,13 +174,25 @@ enum ZipperMoveResult<'a> {
     Failed(Zipper<'a>)
 }
 
+type LayoutPointer<'a> = Rc<RefCell<Layout<'a>>>;
+
+enum PrevDir {
+    Parent,
+    Left,
+    Right,
+}
+
+struct Breadcrumb<'a> {
+    zipper: Box<Zipper<'a>>,
+    direction: PrevDir,
+}
+
 struct Zipper<'a> {
-    focus: Rc<RefCell<Layout<'a>>>,
-    parent: Option<Rc<RefCell<Layout<'a>>>>,
-    previous: Option<Box<Zipper<'a>>>,
-    children: Vec<Rc<RefCell<Layout<'a>>>>,
-    left: Vec<Rc<RefCell<Layout<'a>>>>,
-    right: Vec<Rc<RefCell<Layout<'a>>>>
+    previous: Option<Breadcrumb<'a>>,
+    focus: LayoutPointer<'a>,
+    children: Vec<LayoutPointer<'a>>,
+    left: Vec<LayoutPointer<'a>>,
+    right: Vec<LayoutPointer<'a>>
 }
 
 impl<'a> Zipper<'a> {
@@ -193,10 +205,40 @@ impl<'a> Zipper<'a> {
             Layout::Content(_) => Vec::new(),
             Layout::Container { layouts, .. } => layouts.iter().cloned().collect(),
         };
-        let parent = Some(self.focus.clone());
-        let previous = Some(Box::new(self));
+        let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Parent });
 
-        ZipperMoveResult::Success(Zipper { focus, parent, previous, children, left, right })
+        ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
+    }
+
+    pub fn move_left(self) -> ZipperMoveResult<'a> {
+        if self.left.len() == 0  { return ZipperMoveResult::Failed(self) }
+        let mut left = self.left.clone();
+        let focus = left.pop().unwrap();
+        let mut tmp_right = self.right.clone();
+        let mut right = vec![self.focus.clone()];
+        right.append(&mut tmp_right);
+        let children = match &*focus.borrow() {
+            Layout::Content(_) => Vec::new(),
+            Layout::Container { layouts, .. } => layouts.iter().cloned().collect(),
+        };
+        let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Right });
+
+        ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
+    }
+
+    pub fn move_right(self) -> ZipperMoveResult<'a> {
+        if self.right.len() == 0  { return ZipperMoveResult::Failed(self) }
+        let right: Vec<LayoutPointer> = self.right[1..].iter().cloned().collect();
+        let focus = right[0].clone();
+        let mut left = self.left.clone();
+        left.push(self.focus.clone());
+        let children = match &*focus.borrow() {
+            Layout::Content(_) => Vec::new(),
+            Layout::Container { layouts, .. } => layouts.iter().cloned().collect(),
+        };
+        let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Left });
+
+        ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
     }
 }
 
