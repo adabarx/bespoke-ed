@@ -1,9 +1,10 @@
 #![allow(dead_code)]
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver as ViewReciever};
 use std::fmt::Debug;
 use std::time::{Instant, Duration};
-use std::{fs, thread, usize};
+use std::{default, fs, thread, usize};
 
 use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver};
@@ -11,6 +12,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use anyhow::Result;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListDirection, Widget};
 use ratatui::{
     widgets::WidgetRef,
@@ -65,9 +67,9 @@ struct CLI {
 // }
 
 #[derive(Clone)]
-struct Model {
+struct Model<'a> {
     app_state: AppState,
-    window: Layout,
+    window: Layout<'a>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
@@ -93,12 +95,19 @@ struct FileExplorer {
 
 struct StatusBar {}
 
+#[derive(Clone, Copy)]
+struct EditorPosition {
+    line: u32,
+    character: u16,
+}
+
+
 #[derive(Clone)]
-enum Content {
+enum Content<'a> {
     Editor {
-        lines: Vec<EditorLine>,
+        text: Text<'a>,
         // line number at top of screen
-        position: u32,
+        position: EditorPosition,
     },
     FileExplorer {
         path: PathBuf,
@@ -106,13 +115,43 @@ enum Content {
     }
 }
 
-impl Content {
-    pub fn new_editor(content: String) -> Self {
-        Self::Editor {
-            position: 0,
-            lines: content.split('\n')
-                .map(|s| EditorLine { characters: s.chars().collect() })
-                .collect(),
+impl<'a> Content<'a> {
+    pub fn new_editor<S: Into<Cow<'a, str>>>(content: S) -> Content<'a> {
+        match content.into() {
+            Cow::Borrowed(c) =>
+                Self::Editor {
+                    position: EditorPosition { line: 0, character: 0 },
+                    text: Text {
+                        lines: c.split('\n')
+                            .map(|line| 
+                                Line {
+                                    spans: line.split_inclusive(' ')
+                                        .map(|s| Span::raw(s))
+                                        .collect(),
+                                    ..Default::default()
+                                }
+                            )
+                            .collect(),
+                        ..Default::default()
+                    }
+                },
+            Cow::Owned(c) =>
+                Self::Editor {
+                    position: EditorPosition { line: 0, character: 0 },
+                    text: Text {
+                        lines: c.split('\n')
+                            .map(|line| 
+                                Line {
+                                    spans: line.split_inclusive(' ')
+                                        .map(|s| Span::raw(s.to_owned()))
+                                        .collect(),
+                                    ..Default::default()
+                                }
+                            )
+                            .collect(),
+                        ..Default::default()
+                    }
+                },
         }
     }
 
@@ -129,24 +168,12 @@ impl Content {
     }
 }
 
-impl WidgetRef for Content {
+impl WidgetRef for Content<'_> {
     fn render_ref(&self, area: Rect, buf: &mut Buffer)
         where Self: Sized
     {
         match self {
-            Content::Editor { lines, position } => {
-                for row in 0..area.height {
-                    if let Some(textline) = lines.get(row as usize + *position as usize) {
-                        let mut index: u16 = 0;
-                        for ch in textline.characters.iter() {
-                            if area.x + index > area.x + area.width { break }
-                            buf.get_mut(area.x + index, area.y + row)
-                                .set_symbol(&ch.to_string());
-                            index += 1;
-                        }
-                    }
-                }
-            },
+            Content::Editor { text, position: _ } => text.render_ref(area, buf),
             Content::FileExplorer { path, entries } => {
                 let path_str = path.to_str().unwrap();
                 let block = Block::default()
@@ -172,11 +199,11 @@ struct EditorLine {
     characters: Vec<char>
 }
 
-struct App {
-    window: Content,
+struct App<'a> {
+    window: Content<'a>,
 }
 
-impl Widget for Content {
+impl Widget for Content<'_> {
     fn render(self, area: Rect, buf: &mut Buffer)
         where Self: Sized
     {
@@ -185,31 +212,32 @@ impl Widget for Content {
 }
 
 #[derive(Clone)]
-enum LayoutDirection {
+enum SplitDirection {
     Vertical,
     Horizontal,
 }
 
 #[derive(Clone)]
-enum Layout {
-    Nested {
-        direction: LayoutDirection,
-        layouts: Vec<Layout>,
+enum Layout<'a> {
+    Container {
+        split_direction: SplitDirection,
+        layouts: Vec<Layout<'a>>,
     },
-    Content(Content),
+    Content(Content<'a>),
 }
 
-impl WidgetRef for Layout {
+impl<'a> WidgetRef for Layout<'a> {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         match self {
             Layout::Content(content) => content.render_ref(area, buf),
-            Layout::Nested { direction, layouts } => {
+            Layout::Container { split_direction, layouts } => {
                 let windows: u16 = layouts.len().try_into().unwrap();
                 if windows == 0 { return (); }
-                match direction {
-                    LayoutDirection::Vertical => {
+                match split_direction {
+                    SplitDirection::Horizontal => {
+                        // split is horizontal. nested containers are stacked vertically
                         let offset = area.height / windows;
-                        layouts.iter().enumerate().for_each(|(i, layout)| {
+                        for (i, layout) in layouts.iter().enumerate() {
                             let area = Rect::new(
                                 area.x,
                                 if i == 0 { area.y } else { area.y + offset + 1 },
@@ -217,11 +245,12 @@ impl WidgetRef for Layout {
                                 offset
                             );
                             layout.render_ref(area, buf)
-                        });
+                        }
                     },
-                    LayoutDirection::Horizontal => {
+                    SplitDirection::Vertical => {
+                        // split is vertical. nested containers are stacked horizontally
                         let offset = area.width / windows;
-                        layouts.iter().enumerate().for_each(|(i, layout)| {
+                        for (i, layout) in layouts.iter().enumerate() {
                             let area = Rect::new(
                                 if i == 0 { area.x } else { area.x + offset + 1 },
                                 area.y,
@@ -229,7 +258,7 @@ impl WidgetRef for Layout {
                                 area.height,
                             );
                             layout.render_ref(area, buf)
-                        });
+                        }
                     },
                 }
             },
@@ -317,18 +346,16 @@ fn main() -> Result<()> {
     thread::spawn(move || tui::input_listener(input_tx, quit_rx_input, tick_rate));
     thread::spawn(move || view_handler(view_rx, quit_rx_view, tick_rate));
 
-    let window = Layout::Nested {
-        direction: LayoutDirection::Horizontal,
-        layouts: vec![
-            Layout::Content(Content::new_editor(content)),
-            Layout::Content(Content::new_file_explorer(path.parent().unwrap().to_path_buf()))
-        ]
-    };
-
     // set up and initial draw
     let mut model = Model {
         app_state: AppState::Running,
-        window
+        window: Layout::Container {
+            split_direction: SplitDirection::Horizontal,
+            layouts: vec![
+                Layout::Content(Content::new_editor(content)),
+                Layout::Content(Content::new_file_explorer(path.parent().unwrap().to_path_buf()))
+            ]
+        }
     };
     view_tx.send(model.window.clone()).unwrap();
 
