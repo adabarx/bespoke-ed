@@ -240,6 +240,25 @@ impl<'a> Zipper<'a> {
 
         ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
     }
+
+    pub fn track_back_to_parent(self) -> ZipperMoveResult<'a> {
+        if let Some(zip) = self.previous {
+            match zip.direction {
+                PrevDir::Parent => ZipperMoveResult::Success(*zip.zipper),
+                _ => {
+                    let crumb = match zip.zipper.track_back_to_parent() {
+                        ZipperMoveResult::Success(z) => z,
+                        ZipperMoveResult::Failed(_) =>
+                            panic!("zipper.move_to_parent shouldn't be able to fail here"),
+                    };
+                    
+                    ZipperMoveResult::Success(crumb)
+                }
+            }
+        } else {
+            ZipperMoveResult::Failed(self)
+        }
+    }
 }
 
 #[derive(Clone)]
