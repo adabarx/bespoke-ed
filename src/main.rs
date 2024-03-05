@@ -1,6 +1,8 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver as ViewReciever};
 use std::fmt::Debug;
 use std::time::{Instant, Duration};
@@ -69,7 +71,7 @@ struct CLI {
 #[derive(Clone)]
 struct Model<'a> {
     app_state: AppState,
-    window: Layout<'a>,
+    layout: Rc<RefCell<Layout<'a>>>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
@@ -199,15 +201,45 @@ struct EditorLine {
     characters: Vec<char>
 }
 
-struct App<'a> {
-    window: Content<'a>,
-}
-
 impl Widget for Content<'_> {
     fn render(self, area: Rect, buf: &mut Buffer)
         where Self: Sized
     {
         self.render_ref(area, buf);
+    }
+}
+
+enum ZipperMoveResult<'a> {
+    Success(Zipper<'a>),
+    Failed(Zipper<'a>)
+}
+
+struct Zipper<'a> {
+    focus: Rc<RefCell<Layout<'a>>>,
+    parent: Option<Box<Zipper<'a>>>,
+    children: Vec<Rc<RefCell<Layout<'a>>>>,
+    left: Vec<Rc<RefCell<Layout<'a>>>>,
+    right: Vec<Rc<RefCell<Layout<'a>>>>
+}
+
+impl<'a> Zipper<'a> {
+    pub fn move_to_child(self, index: usize) -> ZipperMoveResult<'a> {
+        if index >= self.children.len() { return ZipperMoveResult::Failed(self) }
+        let left = self.children[0..index].iter().cloned().collect();
+        let right = self.children[index + 1..self.children.len()].iter().cloned().collect();
+        let focus = self.children[index].clone();
+        let children = match &*focus.borrow() {
+            Layout::Content(_) => Vec::new(),
+            Layout::Container { layouts, .. } => layouts.iter().cloned().collect(),
+        };
+
+        ZipperMoveResult::Success(Zipper {
+            focus,
+            parent: Some(Box::new(self)),
+            children,
+            left,
+            right
+        })
     }
 }
 
@@ -221,7 +253,7 @@ enum SplitDirection {
 enum Layout<'a> {
     Container {
         split_direction: SplitDirection,
-        layouts: Vec<Layout<'a>>,
+        layouts: Vec<Rc<RefCell<Layout<'a>>>>,
     },
     Content(Content<'a>),
 }
@@ -237,14 +269,14 @@ impl<'a> WidgetRef for Layout<'a> {
                     SplitDirection::Horizontal => {
                         // split is horizontal. nested containers are stacked vertically
                         let offset = area.height / windows;
-                        for (i, layout) in layouts.iter().enumerate() {
+                        for (i, layout) in layouts.iter().cloned().enumerate() {
                             let area = Rect::new(
                                 area.x,
                                 if i == 0 { area.y } else { area.y + offset + 1 },
                                 area.width,
                                 offset
                             );
-                            layout.render_ref(area, buf)
+                            layout.borrow().render_ref(area, buf)
                         }
                     },
                     SplitDirection::Vertical => {
@@ -257,7 +289,7 @@ impl<'a> WidgetRef for Layout<'a> {
                                 offset,
                                 area.height,
                             );
-                            layout.render_ref(area, buf)
+                            layout.borrow().render_ref(area, buf)
                         }
                     },
                 }
@@ -274,9 +306,10 @@ fn update(mut model: Model, msg: Msg) -> Model{
     model
 }
 
-fn view(tree: Layout, frame: &mut Frame) {
+fn view(tree: Rc<RefCell<Layout>>, frame: &mut Frame) {
+    let tree = tree.borrow();
     frame.render_widget(
-        &tree,
+        &*tree,
         frame.size(),
     )
 }
@@ -302,27 +335,6 @@ fn handle_events(input: Event) -> Option<Msg> {
     }
 }
 
-fn view_handler(
-    view_rx: ViewReciever<Layout>,
-    quit_rx: Receiver<Msg>,
-    tick_rate: Duration,
-) -> Result<()> {
-    let mut terminal = tui::init_app()?;
-    let mut last_tick = Instant::now();
-    loop {
-        if quit_rx.try_recv().is_ok() { break }
-
-        last_tick = timeout_sleep(tick_rate, last_tick);
-
-        // draw
-        while let Ok(model) = view_rx.try_recv() {
-            terminal.draw(|f| view(model, f))?;
-        }
-    }
-    tui::teardown_app()?;
-    Ok(())
-}
-
 pub fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
     let timeout = tick_rate.saturating_sub(last_tick.elapsed());
     if !timeout.is_zero() { thread::sleep(timeout); }
@@ -334,40 +346,38 @@ fn main() -> Result<()> {
     let content = fs::read_to_string(path.clone()).expect("File Doesn't Exist");
 
     tui::install_panic_hook();
+    let mut terminal = tui::init_app()?;
 
     let tick_rate = Duration::from_millis(16);
 
-    let (view_tx, view_rx) = mpsc::channel::<Layout>();
     let (input_tx, input_rx) = unbounded::<Event>();
     let (quit_tx, quit_rx) = unbounded::<Msg>();
-
-    let quit_rx_input = quit_rx.clone();
-    let quit_rx_view = quit_rx.clone();
-    thread::spawn(move || tui::input_listener(input_tx, quit_rx_input, tick_rate));
-    thread::spawn(move || view_handler(view_rx, quit_rx_view, tick_rate));
 
     // set up and initial draw
     let mut model = Model {
         app_state: AppState::Running,
-        window: Layout::Container {
+        layout: Rc::new(RefCell::new(Layout::Container {
             split_direction: SplitDirection::Horizontal,
             layouts: vec![
-                Layout::Content(Content::new_editor(content)),
-                Layout::Content(Content::new_file_explorer(path.parent().unwrap().to_path_buf()))
+                Rc::new(RefCell::new(Layout::Content(Content::new_editor(content)))),
+                Rc::new(RefCell::new(Layout::Content(Content::new_file_explorer(path.parent().unwrap().to_path_buf()))))
             ]
-        }
+        }))
     };
-    view_tx.send(model.window.clone()).unwrap();
+
+    let quit_rx_input = quit_rx.clone();
+    thread::spawn(move || tui::input_listener(input_tx, quit_rx_input, tick_rate));
 
     let mut last_tick = Instant::now();
     loop {
         last_tick = timeout_sleep(tick_rate, last_tick);
 
+        terminal.draw(|f| view(model.layout.clone(), f))?;
+
         // handle input
         while let Ok(input) = input_rx.try_recv() {
             if let Some(msg) = handle_events(input) {
                 model = update(model, msg);
-                view_tx.send(model.window.clone()).unwrap();
             }
         }
 
