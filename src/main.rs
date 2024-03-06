@@ -48,13 +48,6 @@ pub enum Msg {
     Quit
 }
 
-struct FileExplorer {
-    path: PathBuf,
-    folders: Vec<PathBuf>,
-    files: Vec<PathBuf>,
-    position: usize,
-}
-
 struct StatusBar {}
 
 #[derive(Clone, Copy)]
@@ -176,6 +169,7 @@ enum ZipperMoveResult<'a> {
 
 type LayoutPointer<'a> = Rc<RefCell<Layout<'a>>>;
 
+#[derive(PartialEq, Eq)]
 enum PrevDir {
     Parent,
     Left,
@@ -198,6 +192,7 @@ struct Zipper<'a> {
 impl<'a> Zipper<'a> {
     pub fn move_to_child(self, index: usize) -> ZipperMoveResult<'a> {
         if index >= self.children.len() { return ZipperMoveResult::Failed(self) }
+
         let left = self.children[0..index].iter().cloned().collect();
         let right = self.children[index + 1..self.children.len()].iter().cloned().collect();
         let focus = self.children[index].clone();
@@ -212,6 +207,12 @@ impl<'a> Zipper<'a> {
 
     pub fn move_left(self) -> ZipperMoveResult<'a> {
         if self.left.len() == 0  { return ZipperMoveResult::Failed(self) }
+        if let Some(prev) = self.previous.as_ref() {
+            if prev.direction == PrevDir::Left {
+                return ZipperMoveResult::Success(*self.previous.unwrap().zipper);
+            }
+        }
+
         let mut left = self.left.clone();
         let focus = left.pop().unwrap();
         let mut tmp_right = self.right.clone();
@@ -228,6 +229,12 @@ impl<'a> Zipper<'a> {
 
     pub fn move_right(self) -> ZipperMoveResult<'a> {
         if self.right.len() == 0  { return ZipperMoveResult::Failed(self) }
+        if let Some(prev) = self.previous.as_ref() {
+            if prev.direction == PrevDir::Right {
+                return ZipperMoveResult::Success(*self.previous.unwrap().zipper);
+            }
+        }
+
         let right: Vec<LayoutPointer> = self.right[1..].iter().cloned().collect();
         let focus = right[0].clone();
         let mut left = self.left.clone();
@@ -249,7 +256,7 @@ impl<'a> Zipper<'a> {
                     let crumb = match zip.zipper.track_back_to_parent() {
                         ZipperMoveResult::Success(z) => z,
                         ZipperMoveResult::Failed(_) =>
-                            panic!("zipper.move_to_parent shouldn't be able to fail here"),
+                            panic!("shouldn't be able to fail here"),
                     };
                     
                     ZipperMoveResult::Success(crumb)
