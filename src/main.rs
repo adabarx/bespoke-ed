@@ -8,13 +8,14 @@ use std::fmt::Debug;
 use std::time::{Instant, Duration};
 use std::{default, fs, thread, usize};
 
+use clap::builder::styling::Style;
 use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use anyhow::Result;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::text::{Line, Span, Text};
+use ratatui::layout::{Alignment, Rect};
+// use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListDirection, Widget};
 use ratatui::{
     widgets::WidgetRef,
@@ -23,15 +24,83 @@ use ratatui::{
 
 mod tui;
 
+type RC<T> = Rc<RefCell<T>>;
+
+pub struct Span {
+    pub content: RC<String>,
+    pub style: Style,
+}
+ impl Span { 
+    pub fn raw<T: Into<String>>(content: T) -> Span {
+        Span {
+            content: Rc::new(RefCell::new(content.into())),
+            style: Style::default(),
+        }
+    }
+}
+
+impl Default for Span {
+    fn default() -> Self {
+        Self {
+            content: Rc::new(RefCell::new("".into())),
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Default)]
+struct Line {
+    spans: Vec<RC<Span>>,
+    style: Style,
+    alignment: Option<Alignment>,
+}
+
+#[derive(Default, Clone)]
+struct Text {
+    lines: Vec<RC<Line>>,
+    pub style: Style,
+    alignment: Option<Alignment>,
+}
+
+impl Widget for Text {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_ref(area, buf);
+    }
+}
+
+impl WidgetRef for Text {
+    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+        buf.set_style(area, self.style);
+        for (line, row) in self.iter().zip(area.rows()) {
+            let line_width = line.width() as u16;
+
+            let x_offset = match (self.alignment, line.alignment) {
+                (Some(Alignment::Center), None) => area.width.saturating_sub(line_width) / 2,
+                (Some(Alignment::Right), None) => area.width.saturating_sub(line_width),
+                _ => 0,
+            };
+
+            let line_area = Rect {
+                x: area.x + x_offset,
+                y: row.y,
+                width: area.width - x_offset,
+                height: 1,
+            };
+
+            line.render(line_area, buf);
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 struct CLI {
     path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
-struct Model<'a> {
+struct Model {
     app_state: AppState,
-    layout: Rc<RefCell<Layout<'a>>>,
+    layout: RC<Layout>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
@@ -58,9 +127,9 @@ struct EditorPosition {
 
 
 #[derive(Clone)]
-enum Content<'a> {
+enum Content {
     Editor {
-        text: Text<'a>,
+        text: Text,
         // line number at top of screen
         position: EditorPosition,
     },
@@ -70,43 +139,24 @@ enum Content<'a> {
     }
 }
 
-impl<'a> Content<'a> {
-    pub fn new_editor<S: Into<Cow<'a, str>>>(content: S) -> Content<'a> {
-        match content.into() {
-            Cow::Borrowed(c) =>
-                Self::Editor {
-                    position: EditorPosition { line: 0, character: 0 },
-                    text: Text {
-                        lines: c.split('\n')
-                            .map(|line| 
-                                Line {
-                                    spans: line.split_inclusive(' ')
-                                        .map(|s| Span::raw(s))
-                                        .collect(),
-                                    ..Default::default()
-                                }
-                            )
-                            .collect(),
-                        ..Default::default()
-                    }
-                },
-            Cow::Owned(c) =>
-                Self::Editor {
-                    position: EditorPosition { line: 0, character: 0 },
-                    text: Text {
-                        lines: c.split('\n')
-                            .map(|line| 
-                                Line {
-                                    spans: line.split_inclusive(' ')
-                                        .map(|s| Span::raw(s.to_owned()))
-                                        .collect(),
-                                    ..Default::default()
-                                }
-                            )
-                            .collect(),
-                        ..Default::default()
-                    }
-                },
+impl Content {
+    pub fn new_editor<S: Into<String>>(content: S) -> Content {
+        let c: String = content.into();
+        Self::Editor {
+            position: EditorPosition { line: 0, character: 0 },
+            text: Text {
+                lines: c.split('\n')
+                    .map(|line| 
+                        Rc::new(RefCell::new(Line {
+                            spans: line.split_inclusive(' ')
+                                .map(|s| Rc::new(RefCell::new(Span::raw(s))))
+                                .collect(),
+                            ..Default::default()
+                        }))
+                    )
+                    .collect(),
+                ..Default::default()
+            }
         }
     }
 
@@ -123,7 +173,7 @@ impl<'a> Content<'a> {
     }
 }
 
-impl WidgetRef for Content<'_> {
+impl WidgetRef for Content {
     fn render_ref(&self, area: Rect, buf: &mut Buffer)
         where Self: Sized
     {
@@ -149,12 +199,7 @@ impl WidgetRef for Content<'_> {
     }
 }
 
-#[derive(Clone)]
-struct EditorLine {
-    characters: Vec<char>
-}
-
-impl Widget for Content<'_> {
+impl Widget for Content {
     fn render(self, area: Rect, buf: &mut Buffer)
         where Self: Sized
     {
@@ -162,12 +207,10 @@ impl Widget for Content<'_> {
     }
 }
 
-enum ZipperMoveResult<'a> {
-    Success(Zipper<'a>),
-    Failed(Zipper<'a>)
+enum ZipperMoveResult {
+    Success(Zipper),
+    Failed(Zipper)
 }
-
-type LayoutPointer<'a> = Rc<RefCell<Layout<'a>>>;
 
 #[derive(PartialEq, Eq)]
 enum PrevDir {
@@ -176,21 +219,21 @@ enum PrevDir {
     Right,
 }
 
-struct Breadcrumb<'a> {
-    zipper: Box<Zipper<'a>>,
+struct Breadcrumb {
+    zipper: Box<Zipper>,
     direction: PrevDir,
 }
 
-struct Zipper<'a> {
-    previous: Option<Breadcrumb<'a>>,
-    focus: LayoutPointer<'a>,
-    children: Vec<LayoutPointer<'a>>,
-    left: Vec<LayoutPointer<'a>>,
-    right: Vec<LayoutPointer<'a>>
+struct Zipper {
+    previous: Option<Breadcrumb>,
+    focus: RC<Layout>,
+    children: Vec<RC<Layout>>,
+    left: Vec<RC<Layout>>,
+    right: Vec<RC<Layout>>,
 }
 
-impl<'a> Zipper<'a> {
-    pub fn move_to_child(self, index: usize) -> ZipperMoveResult<'a> {
+impl Zipper {
+    pub fn move_to_child(self, index: usize) -> ZipperMoveResult {
         if index >= self.children.len() { return ZipperMoveResult::Failed(self) }
 
         let left = self.children[0..index].iter().cloned().collect();
@@ -205,7 +248,7 @@ impl<'a> Zipper<'a> {
         ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
     }
 
-    pub fn move_left(self) -> ZipperMoveResult<'a> {
+    pub fn move_left(self) -> ZipperMoveResult {
         if self.left.len() == 0  { return ZipperMoveResult::Failed(self) }
         if let Some(prev) = self.previous.as_ref() {
             if prev.direction == PrevDir::Left {
@@ -227,7 +270,7 @@ impl<'a> Zipper<'a> {
         ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
     }
 
-    pub fn move_right(self) -> ZipperMoveResult<'a> {
+    pub fn move_right(self) -> ZipperMoveResult {
         if self.right.len() == 0  { return ZipperMoveResult::Failed(self) }
         if let Some(prev) = self.previous.as_ref() {
             if prev.direction == PrevDir::Right {
@@ -235,7 +278,7 @@ impl<'a> Zipper<'a> {
             }
         }
 
-        let right: Vec<LayoutPointer> = self.right[1..].iter().cloned().collect();
+        let right: Vec<RC<Layout>> = self.right[1..].iter().cloned().collect();
         let focus = right[0].clone();
         let mut left = self.left.clone();
         left.push(self.focus.clone());
@@ -248,7 +291,7 @@ impl<'a> Zipper<'a> {
         ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
     }
 
-    pub fn track_back_to_parent(self) -> ZipperMoveResult<'a> {
+    pub fn track_back_to_parent(self) -> ZipperMoveResult {
         if let Some(zip) = self.previous {
             match zip.direction {
                 PrevDir::Parent => ZipperMoveResult::Success(*zip.zipper),
@@ -275,15 +318,15 @@ enum SplitDirection {
 }
 
 #[derive(Clone)]
-enum Layout<'a> {
+enum Layout {
     Container {
         split_direction: SplitDirection,
-        layouts: Vec<Rc<RefCell<Layout<'a>>>>,
+        layouts: Vec<Rc<RefCell<Layout>>>,
     },
-    Content(Content<'a>),
+    Content(Content),
 }
 
-impl<'a> WidgetRef for Layout<'a> {
+impl<'a> WidgetRef for Layout {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         match self {
             Layout::Content(content) => content.render_ref(area, buf),
