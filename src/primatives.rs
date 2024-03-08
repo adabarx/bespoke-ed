@@ -1,9 +1,14 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, u16};
 
 use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::{Widget, WidgetRef}};
 
 type RC<T> = Rc<RefCell<T>>;
 
+//
+// span
+//
+
+#[derive(Clone)]
 pub struct Span {
     pub content: String,
     pub style: Style,
@@ -21,17 +26,46 @@ impl Default for Span {
     fn default() -> Self {
         Self {
             content: "".into(),
-            ..Default::default()
+            style: Style::default(),
         }
     }
 }
 
-#[derive(Default)]
+impl WidgetRef for Span {
+    fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+        let mut i: u16 = 0;
+        for ch in self.content.chars() {
+            buf.get_mut(area.x + i, area.y).set_symbol(&ch.to_string());
+            i += 1;
+        }
+    }
+}
+
+//
+// line
+//
+
+#[derive(Default, Clone)]
 pub struct Line {
     pub spans: Vec<RC<Span>>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
+
+impl WidgetRef for Line {
+    fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+        let mut offset: u16 = 0;
+        for span in self.spans.iter() {
+            let span = span.borrow();
+            span.render_ref(Rect { x: area.x + offset, ..area }, buf);
+            offset += span.content.chars().count() as u16;
+        }
+    }
+}
+
+//
+// text
+//
 
 #[derive(Default, Clone)]
 pub struct Text {
@@ -49,23 +83,10 @@ impl Widget for Text {
 impl WidgetRef for Text {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
-        for (line, row) in self.iter().zip(area.rows()) {
-            let line_width = line.width() as u16;
-
-            let x_offset = match (self.alignment, line.alignment) {
-                (Some(Alignment::Center), None) => area.width.saturating_sub(line_width) / 2,
-                (Some(Alignment::Right), None) => area.width.saturating_sub(line_width),
-                _ => 0,
-            };
-
-            let line_area = Rect {
-                x: area.x + x_offset,
-                y: row.y,
-                width: area.width - x_offset,
-                height: 1,
-            };
-
-            line.render(line_area, buf);
+        let mut line_number: u16 = 0;
+        for line in self.lines.iter() {
+            line.borrow().render_ref(Rect { y: area.y + line_number, ..area }, buf);
+            line_number += 1;
         }
     }
 }
