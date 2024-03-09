@@ -1,31 +1,37 @@
-use std::{cell::RefCell, rc::Rc, u16};
+use std::{cell::RefCell, rc::Rc, str::Chars, u16};
 
 use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::{Widget, WidgetRef}};
 
 type RC<T> = Rc<RefCell<T>>;
 
 //
+// char
+//
+#[derive(Clone)]
+pub struct Char {
+    pub char: char,
+    pub style: Style,
+}
+
+//
 // span
 //
 
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct Span {
-    pub content: String,
+    pub content: Vec<RC<Char>>,
     pub style: Style,
 }
+
  impl Span { 
     pub fn raw<T: Into<String>>(content: T) -> Span {
+        let content: String = content.into();
         Span {
-            content: content.into(),
-            style: Style::default(),
-        }
-    }
-}
-
-impl Default for Span {
-    fn default() -> Self {
-        Self {
-            content: "".into(),
+            content: content.chars()
+                .map(|ch| Rc::new(RefCell::new(
+                    Char { char: ch, style: Style::default() }
+                )))
+                .collect(),
             style: Style::default(),
         }
     }
@@ -34,8 +40,9 @@ impl Default for Span {
 impl WidgetRef for Span {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         let mut i: u16 = 0;
-        for ch in self.content.chars() {
-            buf.get_mut(area.x + i, area.y).set_symbol(&ch.to_string());
+        for ch in self.content.iter() {
+            let ch = *ch.borrow();
+            buf.get_mut(area.x + i, area.y).set_symbol(&ch.char.to_string());
             i += 1;
         }
     }
@@ -58,7 +65,7 @@ impl WidgetRef for Line {
         for span in self.spans.iter() {
             let span = span.borrow();
             span.render_ref(Rect { x: area.x + offset, ..area }, buf);
-            offset += span.content.chars().count() as u16;
+            offset += span.content.iter().count() as u16;
         }
     }
 }
