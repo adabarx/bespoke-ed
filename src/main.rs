@@ -1,5 +1,4 @@
 #![allow(dead_code, unused_imports)]
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -15,7 +14,6 @@ use anyhow::Result;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
-// use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListDirection, Widget};
 use ratatui::{
     widgets::WidgetRef,
@@ -47,9 +45,12 @@ enum AppState {
     Stop
 }
 
+#[derive(PartialEq, Eq)]
 pub enum Msg {
-    Increment,
-    Decrement,
+    ToFirstChild,
+    ToParent,
+    ToLeftSibling,
+    ToRightSibling,
     Reset,
     Quit
 }
@@ -115,7 +116,7 @@ impl WidgetRef for Content {
         where Self: Sized
     {
         match self {
-            Content::Editor { text, position: _ } => text.render_ref(area, buf),
+            Content::Editor { text, .. } => text.render_ref(area, buf),
             Content::FileExplorer { path, entries } => {
                 let path_str = path.to_str().unwrap();
                 let block = Block::default()
@@ -147,6 +148,15 @@ impl Widget for Content {
 enum ZipperMoveResult {
     Success(Zipper),
     Failed(Zipper)
+}
+
+impl ZipperMoveResult {
+    pub fn unwrap(self) -> Zipper {
+        match self {
+            ZipperMoveResult::Success(zip) => zip,
+            ZipperMoveResult::Failed(zip) => zip,
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -258,6 +268,17 @@ struct Zipper {
 }
 
 impl Zipper {
+    pub fn new(root: Node) -> Self {
+        let children = root.get_children().unwrap();
+        Self {
+            focus: root,
+            children,
+            previous: None,
+            left: Vec::new(),
+            right: Vec::new(),
+        }
+    }
+
     pub fn move_to_child(mut self, index: usize) -> ZipperMoveResult {
         if index >= self.children.len() { return ZipperMoveResult::Failed(self) }
         self.focus.no_highlight();
@@ -415,12 +436,14 @@ impl<'a> WidgetRef for Layout {
     }
 }
 
-fn update(mut model: Model, msg: Msg) -> Model{
+fn update(zipper: Zipper, msg: Msg) -> Zipper {
     match msg {
-        Msg::Quit => model.app_state = AppState::Stop,
-        _ => ()
+        Msg::ToParent => zipper.track_back_to_parent().unwrap(),
+        Msg::ToFirstChild => zipper.move_to_child(0).unwrap(),
+        Msg::ToLeftSibling => zipper.move_left().unwrap(),
+        Msg::ToRightSibling => zipper.move_right().unwrap(),
+        _ => zipper,
     }
-    model
 }
 
 fn view(tree: Rc<RefCell<Layout>>, frame: &mut Frame) {
@@ -434,8 +457,10 @@ fn view(tree: Rc<RefCell<Layout>>, frame: &mut Frame) {
 fn handle_keys(key: KeyEvent) -> Option<Msg> {
     match key.kind {
         KeyEventKind::Press => match key.code {
-            KeyCode::Char('j') => Some(Msg::Increment),
-            KeyCode::Char('k') => Some(Msg::Decrement),
+            KeyCode::Char('j') => Some(Msg::ToFirstChild),
+            KeyCode::Char('k') => Some(Msg::ToParent),
+            KeyCode::Char('h') => Some(Msg::ToLeftSibling),
+            KeyCode::Char('l') => Some(Msg::ToRightSibling),
             KeyCode::Char('r') => Some(Msg::Reset),
             KeyCode::Char('q') => Some(Msg::Quit),
             _ => None,
@@ -471,7 +496,7 @@ fn main() -> Result<()> {
     let (quit_tx, quit_rx) = unbounded::<Msg>();
 
     // set up and initial draw
-    let mut model = Model {
+    let model = Model {
         app_state: AppState::Running,
         layout: Rc::new(RefCell::new(Layout::Container {
             split_direction: SplitDirection::Horizontal,
@@ -481,11 +506,14 @@ fn main() -> Result<()> {
         }))
     };
 
+    let mut zipper = Zipper::new(Node::Layout(model.layout.clone()));
+
     let quit_rx_input = quit_rx.clone();
     thread::spawn(move || tui::input_listener(input_tx, quit_rx_input, tick_rate));
 
     let mut last_tick = Instant::now();
-    loop {
+    let mut quit = false;
+    'main: loop {
         last_tick = timeout_sleep(tick_rate, last_tick);
 
         terminal.draw(|f| view(model.layout.clone(), f))?;
@@ -493,13 +521,14 @@ fn main() -> Result<()> {
         // handle input
         while let Ok(input) = input_rx.try_recv() {
             if let Some(msg) = handle_events(input) {
-                model = update(model, msg);
+                if msg == Msg::Quit { quit = true; }
+                zipper = update(zipper, msg);
             }
         }
 
-        if model.app_state == AppState::Stop {
-            quit_tx.send(Msg::Quit)?;
-            break;
+        if quit {
+            quit_tx.send(Msg::Quit).unwrap();
+            break 'main;
         }
     }
 

@@ -13,6 +13,13 @@ pub struct Char {
     pub style: Style,
 }
 
+impl WidgetRef for Char {
+    fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+        buf.set_style(area, self.style);
+        buf.get_mut(area.x, area.y).set_symbol(&self.char.to_string());
+    }
+}
+
 //
 // span
 //
@@ -39,10 +46,16 @@ pub struct Span {
 
 impl WidgetRef for Span {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+        buf.set_style(area, self.style);
         let mut i: u16 = 0;
         for ch in self.content.iter() {
-            let ch = *ch.borrow();
-            buf.get_mut(area.x + i, area.y).set_symbol(&ch.char.to_string());
+            let area = Rect {
+                x: area.x + i,
+                y: area.y,
+                width: 1,
+                height: 1,
+            };
+            ch.borrow().render_ref(area, buf);
             i += 1;
         }
     }
@@ -59,12 +72,28 @@ pub struct Line {
     pub alignment: Option<Alignment>,
 }
 
+impl Line {
+    pub fn char_len(&self) -> u16 {
+        self.spans
+            .iter()
+            .map(|sp| sp.borrow().content.len() as u16)
+            .sum()
+    }
+}
+
 impl WidgetRef for Line {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+        buf.set_style(area, self.style);
         let mut offset: u16 = 0;
         for span in self.spans.iter() {
             let span = span.borrow();
-            span.render_ref(Rect { x: area.x + offset, ..area }, buf);
+            let area = Rect {
+                x: area.x + offset,
+                y: area.y,
+                width: span.content.len() as u16,
+                height: 1,
+            };
+            span.render_ref(area, buf);
             offset += span.content.iter().count() as u16;
         }
     }
@@ -81,20 +110,44 @@ pub struct Text {
     pub alignment: Option<Alignment>,
 }
 
-impl Widget for Text {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        self.render_ref(area, buf);
-    }
-}
-
 impl WidgetRef for Text {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
         let mut line_number: u16 = 0;
         for line in self.lines.iter() {
-            line.borrow().render_ref(Rect { y: area.y + line_number, ..area }, buf);
+            let area = Rect {
+                x: area.x,
+                y: area.y + line_number,
+                width: line.borrow().char_len(),
+                height: 1,
+            };
+            line.borrow().render_ref(area, buf);
             line_number += 1;
         }
+    }
+}
+
+impl Widget for Char {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_ref(area, buf);
+    }
+}
+
+impl Widget for Span {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_ref(area, buf);
+    }
+}
+
+impl Widget for Line {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_ref(area, buf);
+    }
+}
+
+impl Widget for Text {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_ref(area, buf);
     }
 }
 
