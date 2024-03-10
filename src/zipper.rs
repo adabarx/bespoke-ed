@@ -1,9 +1,9 @@
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use ratatui::style::{Color, Style};
+use anyhow::Result;
 
-use crate::{primatives::{Char, Line, Span}, Content, Layout};
-
+use crate::primatives::{Char, Content, Layout, Line, Span};
 
 type RC<T> = Rc<RefCell<T>>;
 
@@ -42,6 +42,11 @@ struct Breadcrumb {
 //     fn replace(&mut self);
 // }
 
+enum NodeResult {
+    Success(Node),
+    Failed(Node),
+}
+
 #[derive(Clone)]
 pub enum Node {
     Layout(RC<Layout>),
@@ -57,6 +62,10 @@ impl Node {
         } else {
             None
         }
+    }
+
+    pub fn try_add_child(&mut self, node: Node, index: usize) -> Result<()> {
+        todo!()
     }
 
     pub fn get_children(&self) -> Option<Vec<Node>> {
@@ -270,18 +279,47 @@ impl Zipper {
             ZipperMoveResult::Success(_) => result,
             ZipperMoveResult::Failed(ref zip) => match zip.clone().track_back_to_parent() {
                 // if that fails, go to the parent
-                ZipperMoveResult::Failed(_) => result.clone(),
-                ZipperMoveResult::Success(zip) => match zip.clone().move_left() {
+                ZipperMoveResult::Failed(_) => result,
+                ZipperMoveResult::Success(mut zip) => match zip.clone().move_left() {
                     // move to the parent's left sibling
-                    ZipperMoveResult::Failed(_) => result.clone(),
-                    ZipperMoveResult::Success(zip) => match zip.clone().move_to_child(zip.children.len()) {
-                        // then move into your left piblings rightmost child
-                        ZipperMoveResult::Failed(_) => result.clone(),
-                        ZipperMoveResult::Success(zip) => ZipperMoveResult::Success(zip),
+                    ZipperMoveResult::Failed(_) => {
+                        zip.focus.no_highlight();
+                        let mut rv = result.unwrap();
+                        rv.focus.highlight();
+                        ZipperMoveResult::Failed(rv)
+                    },
+                    ZipperMoveResult::Success(mut zip) => {
+                        match zip.clone().move_to_child(zip.children.len()) {
+                            // then move into your left piblings rightmost child
+                            ZipperMoveResult::Failed(_) => {
+                                zip.focus.no_highlight();
+                                let mut rv = result.unwrap();
+                                rv.focus.highlight();
+                                ZipperMoveResult::Failed(rv)
+                            },
+                            ZipperMoveResult::Success(zip) => ZipperMoveResult::Success(zip),
+                        }
                     }
                 }
             }
         }
+    }
+
+    pub fn add_child(mut self, node: Node, index: usize) -> Zipper {
+        let len = self.children.len();
+        if index >= len {
+            self.children.push(node);
+            return self;
+        }
+
+        let mut children = self.children[0..index].to_vec();
+        let mut child = vec![node];
+        let mut the_rest = self.children[index + 1..len].to_vec();
+        children.append(&mut child);
+        children.append(&mut the_rest);
+
+        self.children = children;
+        self
     }
 
     pub fn replace_focus(mut self, new_node: Node) -> Zipper {
