@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use std::{cell::RefCell, cmp::min, collections::VecDeque, rc::Rc};
 
 use ratatui::style::{Color, Style};
 use anyhow::{anyhow, bail, Result};
@@ -46,20 +46,6 @@ pub enum Node {
     Char(RC<Char>),
 }
 
-impl TryMother<Node> for Node {
-    fn try_add_child(&mut self, child: RC<Node>, index: usize) -> Result<()> {
-        use Node::*;
-        let child_data = child.borrow().clone();
-        match (self, child_data) {
-            (Layout(mom), Layout(child)) => mom.borrow_mut().try_add_child(child, index),
-            (Layout(mom), Line(child))   => mom.borrow_mut().try_add_child(child, index),
-            (Line(mom), Span(child))  => Ok(mom.borrow_mut().add_child(child, index)),
-            (Span(mom), Char(child))  => Ok(mom.borrow_mut().add_child(child, index)),
-            _ => Err(anyhow!("this child does not please mother")),
-        }
-    }
-}
-
 impl Node {
     pub fn get_layout(&self) -> Option<RC<Layout>> {
         if let Node::Layout(layout) = self {
@@ -69,6 +55,24 @@ impl Node {
         }
     }
 
+    fn try_add_child(&mut self, child: Node, index: usize) -> Result<Node> {
+        use Node::*;
+        match (self, child) {
+            (Layout(mom), Layout(child)) => Ok(Node::Layout(
+                mom.borrow_mut().try_add_child(child.borrow().clone(), index)?
+            )),
+            (Layout(mom), Line(child)) => Ok(Node::Line(
+                mom.borrow_mut().try_add_child(child.borrow().clone(), index)?
+            )),
+            (Line(mom), Span(child)) => Ok(Node::Span(
+                mom.borrow_mut().add_child(child.borrow().clone(), index)
+            )),
+            (Span(mom), Char(child)) => Ok(Node::Char(
+                mom.borrow_mut().add_child(child.borrow().clone(), index)
+            )),
+            _ => Err(anyhow!("this child does not please mother")),
+        }
+    }
     pub fn get_children(&self) -> Option<Vec<Node>> {
         // returns None if node doesn't carry children
         // returns an empty vec if the node can carry
@@ -149,6 +153,16 @@ impl Zipper {
             left: Vec::new(),
             right: VecDeque::new(),
         }
+    }
+
+    fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
+        self.focus.try_add_child(child.clone(), index)?;
+
+        let len = self.children.len();
+        let mut children: Vec<Node> = self.children.drain(min(index, len)..len).collect();
+        self.children.push(child);
+        self.children.append(&mut children);
+        Ok(())
     }
 
     pub fn move_to_child(mut self, index: usize) -> ZipperMoveResult {

@@ -6,11 +6,11 @@ use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::
 use crate::RC;
 
 pub trait Mother<T> {
-    fn add_child(&mut self, child: RC<T>, index: usize);
+    fn add_child(&mut self, child: T, index: usize) -> RC<T>;
 }
 
 pub trait TryMother<T> {
-    fn try_add_child(&mut self, child: RC<T>, index: usize) -> Result<()>;
+    fn try_add_child(&mut self, child: T, index: usize) -> Result<RC<T>>;
 }
 
 //
@@ -55,52 +55,57 @@ pub struct Span {
 }
 
 impl Mother<Char> for Span {
-    fn add_child(&mut self, child: RC<Char>, index: usize) {
+    fn add_child(&mut self, child: Char, index: usize) -> RC<Char> {
         let len = self.content.len();
         let mut chars: Vec<RC<Char>> =
             self.content
                 .drain(min(index, len)..len)
                 .collect();
 
-        self.content.push(child);
+        let child = Rc::new(RefCell::new(child));
+        self.content.push(child.clone());
         self.content.append(&mut chars);
 
-        self.content = chars;
+        child
     }
 }
 
 impl Mother<Span> for Line {
-    fn add_child(&mut self, child: RC<Span>, index: usize) {
+    fn add_child(&mut self, child: Span, index: usize) -> RC<Span> {
         let len = self.spans.len();
         let mut spans: Vec<RC<Span>> =
             self.spans
                 .drain(min(index, len)..len)
                 .collect();
 
-        self.spans.push(child);
+        let child = Rc::new(RefCell::new(child));
+        self.spans.push(child.clone());
         self.spans.append(&mut spans);
 
         self.spans = spans;
+        child
     }
 }
 
 impl Mother<Line> for Text {
-    fn add_child(&mut self, child: RC<Line>, index: usize) {
+    fn add_child(&mut self, child: Line, index: usize) -> RC<Line> {
         let len = self.lines.len();
         let mut lines: Vec<RC<Line>> =
             self.lines
                 .drain(min(index, len)..len)
                 .collect();
 
-        self.lines.push(child);
+        let child = Rc::new(RefCell::new(child));
+        self.lines.push(child.clone());
         self.lines.append(&mut lines);
 
         self.lines = lines;
+        child
     }
 }
 
 impl TryMother<Layout> for Layout {
-    fn try_add_child(&mut self, child: RC<Layout>, index: usize) -> Result<()> {
+    fn try_add_child(&mut self, child: Layout, index: usize) -> Result<RC<Layout>> {
         Ok(match self {
             Layout::Content(_) => bail!("Cant add layout to content"),
             Layout::Container { layouts, .. } => {
@@ -110,8 +115,11 @@ impl TryMother<Layout> for Layout {
                         .drain(min(index, len)..len)
                         .collect();
 
-                layouts.push(child);
+                let child = Rc::new(RefCell::new(child));
+                layouts.push(child.clone());
                 layouts.append(&mut tail);
+
+                child
             }
         })
     }
@@ -299,12 +307,10 @@ pub enum Layout {
 }
 
 impl TryMother<Line> for Layout {
-    fn try_add_child(&mut self, child: RC<Line>, index: usize) -> Result<()> {
+    fn try_add_child(&mut self, child: Line, index: usize) -> Result<RC<Line>> {
         Ok(match self {
             Layout::Container { .. } => bail!("Can't add lines to a container"),
-            Layout::Content(text) => {
-                text.add_child(child, index);
-            }
+            Layout::Content(text) => text.add_child(child, index),
         })
     }
 }
