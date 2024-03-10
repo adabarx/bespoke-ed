@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use ratatui::style::{Color, Style};
 
@@ -7,6 +7,7 @@ use crate::{primatives::{Char, Line, Span}, Content, Layout};
 
 type RC<T> = Rc<RefCell<T>>;
 
+#[derive(Clone)]
 pub enum ZipperMoveResult {
     Success(Zipper),
     Failed(Zipper)
@@ -21,13 +22,14 @@ impl ZipperMoveResult {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum PrevDir {
-    Parent,
+    Parent { index: usize },
     Left,
     Right,
 }
 
+#[derive(Clone)]
 struct Breadcrumb {
     zipper: Box<Zipper>,
     direction: PrevDir,
@@ -121,12 +123,13 @@ impl Node {
     }
 }
 
+#[derive(Clone)]
 pub struct Zipper {
     previous: Option<Breadcrumb>,
     focus: Node,
     children: Vec<Node>,
     left: Vec<Node>,
-    right: Vec<Node>,
+    right: VecDeque<Node>,
 }
 
 impl Zipper {
@@ -137,7 +140,7 @@ impl Zipper {
             children,
             previous: None,
             left: Vec::new(),
-            right: Vec::new(),
+            right: VecDeque::new(),
         }
     }
 
@@ -155,7 +158,7 @@ impl Zipper {
         focus.highlight();
 
         let children = focus.get_children().unwrap_or(Vec::new());
-        let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Parent });
+        let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Parent{ index } });
 
         ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
     }
@@ -172,20 +175,21 @@ impl Zipper {
     }
 
     pub fn move_left(mut self) -> ZipperMoveResult {
-        if self.left.len() == 0  { return ZipperMoveResult::Failed(self) }
         if let Some(prev) = self.previous.as_ref() {
             if prev.direction == PrevDir::Left {
                 return ZipperMoveResult::Success(self.move_to_prev().unwrap());
             }
         }
 
-        self.focus.no_highlight();
         let mut left = self.left.clone();
-        let mut focus = left.pop().unwrap();
+        let mut focus = if let Some(node) = left.pop() { node }
+            else { return ZipperMoveResult::Failed(self); };
+
+        self.focus.no_highlight();
         focus.highlight();
-        let mut tmp_right = self.right.clone();
-        let mut right = vec![self.focus.clone()];
-        right.append(&mut tmp_right);
+
+        let mut right = self.right.clone();
+        right.push_front(self.focus.clone());
         let children = focus.get_children().unwrap_or(Vec::new());
         let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Right });
 
@@ -193,17 +197,19 @@ impl Zipper {
     }
 
     pub fn move_right(mut self) -> ZipperMoveResult {
-        if self.right.len() == 0  { return ZipperMoveResult::Failed(self) }
         if let Some(prev) = self.previous.as_ref() {
             if prev.direction == PrevDir::Right {
                 return ZipperMoveResult::Success(self.move_to_prev().unwrap());
             }
         }
 
+        let mut right = self.right.clone();
+        let mut focus = if let Some(node) = right.pop_front() { node }
+            else { return ZipperMoveResult::Failed(self); };
+
         self.focus.no_highlight();
-        let right: Vec<Node> = self.right[1..].iter().cloned().collect();
-        let mut focus = right[0].clone();
         focus.highlight();
+
         let mut left = self.left.clone();
         left.push(self.focus.clone());
         let children = focus.get_children().unwrap_or(Vec::new());
@@ -216,7 +222,7 @@ impl Zipper {
         if let Some(mut zip) = self.previous {
             self.focus.no_highlight();
             match zip.direction {
-                PrevDir::Parent => {
+                PrevDir::Parent { .. } => {
                     zip.zipper.focus.highlight();
                     ZipperMoveResult::Success(*zip.zipper)
                 },
@@ -233,6 +239,48 @@ impl Zipper {
             }
         } else {
             ZipperMoveResult::Failed(self)
+        }
+    }
+
+    pub fn move_right_or_cousin(self) -> ZipperMoveResult {
+        let result = self.move_right();
+        match result {
+            // first, move right
+            ZipperMoveResult::Success(_) => result,
+            ZipperMoveResult::Failed(ref zip) => match zip.clone().track_back_to_parent() {
+                // if that fails, go to the parent
+                ZipperMoveResult::Failed(_) => result.clone(),
+                ZipperMoveResult::Success(zip) => match zip.clone().move_right() {
+                    // move to the parent's right sibling
+                    ZipperMoveResult::Failed(_) => result.clone(),
+                    ZipperMoveResult::Success(zip) => match zip.clone().move_to_child(0) {
+                        // then move into your right piblings leftmost child
+                        ZipperMoveResult::Failed(_) => result.clone(),
+                        ZipperMoveResult::Success(zip) => ZipperMoveResult::Success(zip),
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn move_left_or_cousin(self) -> ZipperMoveResult {
+        let result = self.move_left();
+        match result {
+            // first, move left
+            ZipperMoveResult::Success(_) => result,
+            ZipperMoveResult::Failed(ref zip) => match zip.clone().track_back_to_parent() {
+                // if that fails, go to the parent
+                ZipperMoveResult::Failed(_) => result.clone(),
+                ZipperMoveResult::Success(zip) => match zip.clone().move_left() {
+                    // move to the parent's left sibling
+                    ZipperMoveResult::Failed(_) => result.clone(),
+                    ZipperMoveResult::Success(zip) => match zip.clone().move_to_child(zip.children.len()) {
+                        // then move into your left piblings rightmost child
+                        ZipperMoveResult::Failed(_) => result.clone(),
+                        ZipperMoveResult::Success(zip) => ZipperMoveResult::Success(zip),
+                    }
+                }
+            }
         }
     }
 

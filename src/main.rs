@@ -206,8 +206,8 @@ fn update(zipper: Zipper, msg: Msg) -> Zipper {
     match msg {
         Msg::ToParent => zipper.track_back_to_parent().unwrap(),
         Msg::ToFirstChild => zipper.move_to_child(0).unwrap(),
-        Msg::ToLeftSibling => zipper.move_left().unwrap(),
-        Msg::ToRightSibling => zipper.move_right().unwrap(),
+        Msg::ToLeftSibling => zipper.move_left_or_cousin().unwrap(),
+        Msg::ToRightSibling => zipper.move_right_or_cousin().unwrap(),
         _ => zipper,
     }
 }
