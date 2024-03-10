@@ -134,7 +134,7 @@ fn main() -> Result<()> {
 
     let mut last_tick = Instant::now();
     let mut quit = false;
-    'main: loop {
+    loop {
         last_tick = timeout_sleep(tick_rate, last_tick);
 
         terminal.draw(|f| view(model.layout.clone(), f))?;
@@ -149,7 +149,7 @@ fn main() -> Result<()> {
 
         if quit {
             quit_tx.send(Msg::Quit).unwrap();
-            break 'main;
+            break;
         }
     }
 

@@ -1,11 +1,9 @@
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use ratatui::style::{Color, Style};
-use anyhow::Result;
+use anyhow::{anyhow, bail, Result};
 
-use crate::primatives::{Char, Content, Layout, Line, Span};
-
-type RC<T> = Rc<RefCell<T>>;
+use crate::{primatives::{Char, Layout, Line, Mother, Span, TryMother}, RC};
 
 #[derive(Clone)]
 pub enum ZipperMoveResult {
@@ -35,13 +33,6 @@ struct Breadcrumb {
     direction: PrevDir,
 }
 
-// type Obj = RC<dyn TreeObj>;
-//
-// trait TreeObj {
-//     fn get_children(&self) -> Option<Vec<Obj>>;
-//     fn replace(&mut self);
-// }
-
 enum NodeResult {
     Success(Node),
     Failed(Node),
@@ -55,6 +46,20 @@ pub enum Node {
     Char(RC<Char>),
 }
 
+impl TryMother<Node> for Node {
+    fn try_add_child(&mut self, child: RC<Node>, index: usize) -> Result<()> {
+        use Node::*;
+        let child_data = child.borrow().clone();
+        match (self, child_data) {
+            (Layout(mom), Layout(child)) => mom.borrow_mut().try_add_child(child, index),
+            (Layout(mom), Line(child))   => mom.borrow_mut().try_add_child(child, index),
+            (Line(mom), Span(child))  => Ok(mom.borrow_mut().add_child(child, index)),
+            (Span(mom), Char(child))  => Ok(mom.borrow_mut().add_child(child, index)),
+            _ => Err(anyhow!("this child does not please mother")),
+        }
+    }
+}
+
 impl Node {
     pub fn get_layout(&self) -> Option<RC<Layout>> {
         if let Node::Layout(layout) = self {
@@ -64,24 +69,17 @@ impl Node {
         }
     }
 
-    pub fn try_add_child(&mut self, node: Node, index: usize) -> Result<()> {
-        todo!()
-    }
-
     pub fn get_children(&self) -> Option<Vec<Node>> {
         // returns None if node doesn't carry children
         // returns an empty vec if the node can carry
         // children but currently doesn't
         match self {
             Node::Layout(layout) => match layout.borrow().clone() { // TODO: get rid of this clone
-                Layout::Content(content) => match content {
-                    Content::FileExplorer { .. } => todo!(),
-                    Content::Editor { text, .. } => Some(
-                        text.lines.iter()
-                            .map(|l| Node::Line(l.clone()))
-                            .collect()
-                    )
-                },
+                Layout::Content(text) => Some(
+                    text.lines.iter()
+                        .map(|l| Node::Line(l.clone()))
+                        .collect()
+                ),
                 Layout::Container { layouts, .. } => Some(
                     layouts.iter()
                         .map(|l| Node::Layout(l.clone()))
