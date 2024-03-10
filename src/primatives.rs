@@ -1,11 +1,16 @@
 use std::{cell::RefCell, cmp::min, fs, path::PathBuf, rc::Rc, str::Chars, u16};
 
+use anyhow::{bail, Result};
 use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::{Widget, WidgetRef}};
 
 use crate::RC;
 
-trait Node<T> {
+trait AddChild<T> {
     fn add_child(&mut self, child: RC<T>, index: usize);
+}
+
+trait TryAddChild<T> {
+    fn try_add_child(&mut self, child: RC<T>, index: usize) -> Result<()>;
 }
 
 //
@@ -48,7 +53,9 @@ pub struct Span {
     }
 }
 
-impl Node<Char> for Span {
+
+
+impl AddChild<Char> for Span {
     fn add_child(&mut self, child: RC<Char>, index: usize) {
         let len = self.content.len();
         let mut chars: Vec<RC<Char>> =
@@ -63,7 +70,7 @@ impl Node<Char> for Span {
     }
 }
 
-impl Node<Span> for Line {
+impl AddChild<Span> for Line {
     fn add_child(&mut self, child: RC<Span>, index: usize) {
         let len = self.spans.len();
         let mut spans: Vec<RC<Span>> =
@@ -78,7 +85,7 @@ impl Node<Span> for Line {
     }
 }
 
-impl Node<Line> for Text {
+impl AddChild<Line> for Text {
     fn add_child(&mut self, child: RC<Line>, index: usize) {
         let len = self.lines.len();
         let mut lines: Vec<RC<Line>> =
@@ -251,7 +258,18 @@ pub enum Layout {
         split_direction: SplitDirection,
         layouts: Vec<RC<Layout>>,
     },
-    Content(Content),
+    Content(Text),
+}
+
+impl TryAddChild<Line> for Layout {
+    fn try_add_child(&mut self, child: RC<Line>, index: usize) -> Result<()> {
+        Ok(match self {
+            Layout::Container { .. } => bail!("Can't add lines to a container"),
+            Layout::Content(content) => {
+
+            }
+        })
+    }
 }
 
 impl<'a> WidgetRef for Layout {
@@ -291,96 +309,6 @@ impl<'a> WidgetRef for Layout {
                 }
             },
         }
-    }
-}
-
-struct StatusBar {}
-
-#[derive(Clone, Copy)]
-struct EditorPosition {
-    line: u32,
-    character: u16,
-}
-
-
-#[derive(Clone)]
-pub enum Content {
-    Editor {
-        text: Text,
-        // line number at top of screen
-        position: EditorPosition,
-    },
-    FileExplorer {
-        path: PathBuf,
-        entries: Vec<PathBuf>,
-    }
-}
-
-impl Content {
-    pub fn new_editor<S: Into<String>>(content: S) -> Content {
-        let c: String = content.into();
-        Self::Editor {
-            position: EditorPosition { line: 0, character: 0 },
-            text: Text {
-                lines: c.split('\n')
-                    .map(|line| 
-                        Rc::new(RefCell::new(Line {
-                            spans: line.split_inclusive(' ')
-                                .map(|s| Rc::new(RefCell::new(Span::raw(s))))
-                                .collect(),
-                            ..Default::default()
-                        }))
-                    )
-                    .collect(),
-                ..Default::default()
-            }
-        }
-    }
-
-    pub fn new_file_explorer(path: PathBuf) -> Self {
-        let entries = fs::read_dir(path.clone())
-            .unwrap()
-            .filter_map(|dir| {
-                let d = dir.ok()?;
-                Some(d.path())
-            })
-            .collect();
-
-        Self::FileExplorer { path, entries }
-    }
-}
-
-impl WidgetRef for Content {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer)
-        where Self: Sized
-    {
-        match self {
-            Content::Editor { text, .. } => text.render_ref(area, buf),
-            Content::FileExplorer { path, entries } => {
-                let path_str = path.to_str().unwrap();
-                let block = ratatui::widgets::Block::default()
-                    .title(path_str)
-                    .borders(ratatui::widgets::Borders::ALL)
-                    .border_type(ratatui::widgets::BorderType::Rounded);
-
-                let list = ratatui::widgets::List::new(entries.iter()
-                    .map(|p| p.to_str().unwrap())
-                    .collect::<Vec<&str>>()
-                );
-
-                list.block(block)
-                    .direction(ratatui::widgets::ListDirection::TopToBottom)
-                    .render(area, buf);
-            }
-        }
-    }
-}
-
-impl Widget for Content {
-    fn render(self, area: Rect, buf: &mut Buffer)
-        where Self: Sized
-    {
-        self.render_ref(area, buf);
     }
 }
 
