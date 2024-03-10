@@ -23,6 +23,7 @@ use ratatui::{
 mod tui;
 mod primatives;
 mod zipper;
+mod flipflop;
 
 use primatives::{Span, Line, Text, Layout, SplitDirection};
 use zipper::{Node, Zipper};

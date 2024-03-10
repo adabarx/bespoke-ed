@@ -23,7 +23,7 @@ pub struct Char {
 }
 
 impl WidgetRef for Char {
-    fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+    fn render_ref(&self, area:Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
         buf.get_mut(area.x, area.y).set_symbol(&self.char.to_string());
     }
