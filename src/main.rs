@@ -24,7 +24,7 @@ mod tui;
 mod primatives;
 mod zipper;
 
-use primatives::{Span, Line, Text, Layout, Content, SplitDirection};
+use primatives::{Span, Line, Text, Layout, SplitDirection};
 use zipper::{Node, Zipper};
 
 type RC<T> = Rc<RefCell<T>>;
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
         layout: Rc::new(RefCell::new(Layout::Container {
             split_direction: SplitDirection::Horizontal,
             layouts: vec![
-                Rc::new(RefCell::new(Layout::Content(Content::new_editor(content)))),
+                Rc::new(RefCell::new(Layout::Content(Text::raw(content)))),
             ]
         }))
     };

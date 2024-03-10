@@ -1,22 +1,22 @@
-use std::{cell::RefCell, cmp::min, fs, path::PathBuf, rc::Rc, str::Chars, u16};
+use std::{cell::{Ref, RefCell}, cmp::min, fs, path::PathBuf, rc::Rc, str::Chars, u16};
 
 use anyhow::{bail, Result};
 use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::{Widget, WidgetRef}};
 
 use crate::RC;
 
-trait AddChild<T> {
+pub trait Mother<T> {
     fn add_child(&mut self, child: RC<T>, index: usize);
 }
 
-trait TryAddChild<T> {
+pub trait TryMother<T> {
     fn try_add_child(&mut self, child: RC<T>, index: usize) -> Result<()>;
 }
 
 //
 // char
 //
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct Char {
     pub char: char,
     pub style: Style,
@@ -43,7 +43,8 @@ pub struct Span {
     pub fn raw<T: Into<String>>(content: T) -> Span {
         let content: String = content.into();
         Span {
-            content: content.chars()
+            content: content
+                .chars()
                 .map(|ch| Rc::new(RefCell::new(
                     Char { char: ch, style: Style::default() }
                 )))
@@ -53,9 +54,7 @@ pub struct Span {
     }
 }
 
-
-
-impl AddChild<Char> for Span {
+impl Mother<Char> for Span {
     fn add_child(&mut self, child: RC<Char>, index: usize) {
         let len = self.content.len();
         let mut chars: Vec<RC<Char>> =
@@ -70,7 +69,7 @@ impl AddChild<Char> for Span {
     }
 }
 
-impl AddChild<Span> for Line {
+impl Mother<Span> for Line {
     fn add_child(&mut self, child: RC<Span>, index: usize) {
         let len = self.spans.len();
         let mut spans: Vec<RC<Span>> =
@@ -85,7 +84,7 @@ impl AddChild<Span> for Line {
     }
 }
 
-impl AddChild<Line> for Text {
+impl Mother<Line> for Text {
     fn add_child(&mut self, child: RC<Line>, index: usize) {
         let len = self.lines.len();
         let mut lines: Vec<RC<Line>> =
@@ -97,6 +96,24 @@ impl AddChild<Line> for Text {
         self.lines.append(&mut lines);
 
         self.lines = lines;
+    }
+}
+
+impl TryMother<Layout> for Layout {
+    fn try_add_child(&mut self, child: RC<Layout>, index: usize) -> Result<()> {
+        Ok(match self {
+            Layout::Content(_) => bail!("Cant add layout to content"),
+            Layout::Container { layouts, .. } => {
+                let len = layouts.len();
+                let mut tail: Vec<RC<Layout>> =
+                    layouts
+                        .drain(min(index, len)..len)
+                        .collect();
+
+                layouts.push(child);
+                layouts.append(&mut tail);
+            }
+        })
     }
 }
 
@@ -134,6 +151,16 @@ pub struct Line {
 }
 
 impl Line {
+    pub fn raw<T: Into<String>>(input: T) -> Line {
+        let spans: String = input.into();
+        Line {
+            spans: spans
+                .split_inclusive(' ')
+                .map(|sp| Rc::new(RefCell::new(Span::raw(sp))))
+                .collect(),
+            ..Default::default()
+        }
+    }
     pub fn add_span(&mut self, span: RC<Span>, index: usize) {
         let len = self.spans.len();
         let mut spans: Vec<RC<Span>> =
@@ -191,6 +218,16 @@ pub struct Text {
 }
 
 impl Text {
+    pub fn raw(input: String) -> Text {
+        Text {
+            lines: input
+                .split('\n')
+                .map(|ln| Rc::new(RefCell::new(Line::raw(ln))))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
     pub fn add_line(&mut self, line: RC<Line>, index: usize) {
         let len = self.lines.len();
         let mut lines: Vec<RC<Line>> =
@@ -261,12 +298,12 @@ pub enum Layout {
     Content(Text),
 }
 
-impl TryAddChild<Line> for Layout {
+impl TryMother<Line> for Layout {
     fn try_add_child(&mut self, child: RC<Line>, index: usize) -> Result<()> {
         Ok(match self {
             Layout::Container { .. } => bail!("Can't add lines to a container"),
-            Layout::Content(content) => {
-
+            Layout::Content(text) => {
+                text.add_child(child, index);
             }
         })
     }
