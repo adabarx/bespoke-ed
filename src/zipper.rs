@@ -3,7 +3,7 @@ use std::{cell::RefCell, cmp::min, collections::VecDeque, rc::Rc};
 use ratatui::style::{Color, Style};
 use anyhow::{anyhow, bail, Result};
 
-use crate::{primatives::{Char, Layout, LayoutType, Line, Mother, Span, TryMother}, RC};
+use crate::{primatives::{Char, Layout, LayoutType, Line, Mother, Span, TryMother}, ARW};
 
 #[derive(Clone)]
 pub enum MoveResult {
@@ -47,14 +47,14 @@ enum NodeResult {
 
 #[derive(Clone)]
 pub enum Node {
-    Layout(RC<Layout>),
-    Line(RC<Line>),
-    Span(RC<Span>),
-    Char(RC<Char>),
+    Layout(ARW<Layout>),
+    Line(ARW<Line>),
+    Span(ARW<Span>),
+    Char(ARW<Char>),
 }
 
 impl Node {
-    pub fn get_layout(&self) -> Option<RC<Layout>> {
+    pub fn get_layout(&self) -> Option<ARW<Layout>> {
         if let Node::Layout(layout) = self {
             Some(layout.clone())
         } else {
@@ -66,16 +66,16 @@ impl Node {
         use Node::*;
         match (self, child) {
             (Layout(mom), Layout(child)) => Ok(Node::Layout(
-                mom.borrow_mut().try_add_child(child.borrow().clone(), index)?
+                mom.write().unwrap().try_add_child(child.read().unwrap().clone(), index)?
             )),
             (Layout(mom), Line(child)) => Ok(Node::Line(
-                mom.borrow_mut().try_add_child(child.borrow().clone(), index)?
+                mom.write().unwrap().try_add_child(child.read().unwrap().clone(), index)?
             )),
             (Line(mom), Span(child)) => Ok(Node::Span(
-                mom.borrow_mut().add_child(child.borrow().clone(), index)
+                mom.write().unwrap().add_child(child.read().unwrap().clone(), index)
             )),
             (Span(mom), Char(child)) => Ok(Node::Char(
-                mom.borrow_mut().add_child(child.borrow().clone(), index)
+                mom.write().unwrap().add_child(child.read().unwrap().clone(), index)
             )),
             _ => Err(anyhow!("this child does not please mother")),
         }
@@ -85,7 +85,7 @@ impl Node {
         // returns an empty vec if the node can carry
         // children but currently doesn't
         match self {
-            Node::Layout(layout) => match layout.borrow().layout.clone() { // TODO: get rid of this clone
+            Node::Layout(layout) => match layout.read().unwrap().layout.clone() { // TODO: get rid of this clone
                 LayoutType::Content(text) => Some(
                     text.lines.iter()
                         .map(|l| Node::Line(l.clone()))
@@ -98,13 +98,13 @@ impl Node {
                 ),
             },
             Node::Span(span) => Some(
-                span.borrow().content
+                span.read().unwrap().characters
                     .iter()
                     .map(|ch| Node::Char(ch.clone()))
                     .collect()
             ),
             Node::Line(line) => Some(
-                line.borrow().spans
+                line.read().unwrap().spans
                     .iter()
                     .map(|sp| Node::Span(sp.clone()))
                     .collect()
@@ -116,27 +116,30 @@ impl Node {
     pub fn highlight(&mut self) {
         match self {
             Node::Line(line) => {
-                line.borrow_mut().style.bg = Some(Color::White);
-                line.borrow_mut().style.fg = Some(Color::Black);
+                line.write().unwrap().style.bg = Some(Color::White);
+                line.write().unwrap().style.fg = Some(Color::Black);
             },
             Node::Span(span) => {
-                span.borrow_mut().style.bg = Some(Color::White);
-                span.borrow_mut().style.fg = Some(Color::Black);
+                span.write().unwrap().style.bg = Some(Color::White);
+                span.write().unwrap().style.fg = Some(Color::Black);
             },
             Node::Char(ch) => {
-                ch.borrow_mut().style.bg = Some(Color::White);
-                ch.borrow_mut().style.fg = Some(Color::Black);
+                ch.write().unwrap().style.bg = Some(Color::White);
+                ch.write().unwrap().style.fg = Some(Color::Black);
             },
-            Node::Layout(_) => (),
+            Node::Layout(layout) => {
+                layout.write().unwrap().style.bg = Some(Color::White);
+                layout.write().unwrap().style.fg = Some(Color::Black);
+            },
         }
     }
 
     pub fn no_highlight(&mut self) {
         match self {
-            Node::Line(line) => line.borrow_mut().style = Style::default(),
-            Node::Span(span) => span.borrow_mut().style = Style::default(),
-            Node::Char(char) => char.borrow_mut().style = Style::default(),
-            Node::Layout(layout) => layout.borrow_mut().style = Style::default(),
+            Node::Line(line) => line.write().unwrap().style = Style::default(),
+            Node::Span(span) => span.write().unwrap().style = Style::default(),
+            Node::Char(char) => char.write().unwrap().style = Style::default(),
+            Node::Layout(layout) => layout.write().unwrap().style = Style::default(),
         }
     }
 }
@@ -163,7 +166,7 @@ impl Zipper {
     }
 
     pub fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
-        self.focus.try_add_child(child.clone(), index)?;
+        self.focus.try_add_child(child.clone(), index).unwrap();
 
         let len = self.children.len();
         let mut children: Vec<Node> = self.children.drain(min(index, len)..len).collect();
@@ -326,7 +329,7 @@ impl Zipper {
 
     pub fn move_to_prev(mut self) -> Option<Zipper> {
         self.focus.no_highlight();
-        let mut rv = self.prev()?;
+        let mut rv = self.prev().unwrap();
         rv.focus.highlight();
         Some(rv)
     }

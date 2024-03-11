@@ -13,32 +13,6 @@ use std::{io::stdout, panic, time::{Duration, Instant}};
 use crossbeam_channel::{Receiver, Sender};
 use anyhow::{Ok, Result};
 
-#[derive(PartialEq, Eq)]
-pub enum Msg {
-    ToFirstChild,
-    ToParent,
-    ToLeftSibling,
-    ToRightSibling,
-    Reset,
-    Quit
-}
-
-pub fn handle_keys(key: KeyEvent) -> Option<Msg> {
-    match key.kind {
-        KeyEventKind::Press => match key.code {
-            KeyCode::Char('j') => Some(Msg::ToFirstChild),
-            KeyCode::Char('k') => Some(Msg::ToParent),
-            KeyCode::Char('h') => Some(Msg::ToLeftSibling),
-            KeyCode::Char('l') => Some(Msg::ToRightSibling),
-            KeyCode::Char('r') => Some(Msg::Reset),
-            KeyCode::Char('q') => Some(Msg::Quit),
-            _ => None,
-        },
-        KeyEventKind::Repeat => None,
-        KeyEventKind::Release => None,
-    }
-}
-
 pub fn init_app() -> Result<Terminal<impl Backend>> {
     stdout().execute(EnterAlternateScreen)?;
     enable_raw_mode()?;
@@ -60,24 +34,6 @@ pub fn install_panic_hook() {
         disable_raw_mode().unwrap();
         original_hook(panic_info);
     }));
-}
-
-pub fn input_listener(
-    input_tx: Sender<Event>,
-    quit_rx: Receiver<Msg>,
-    tick_rate: Duration,
-) -> Result<()> {
-    let mut last_tick = Instant::now();
-    loop {
-        if quit_rx.try_recv().is_ok() { break; }
-
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if crossterm::event::poll(timeout)? {
-            input_tx.send(event::read()?)?;
-            last_tick = Instant::now();
-        }
-    };
-    Ok(())
 }
 
 pub fn view() {}

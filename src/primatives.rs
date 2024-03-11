@@ -1,16 +1,16 @@
-use std::{cell::{Ref, RefCell}, cmp::min, fs, path::PathBuf, rc::Rc, str::Chars, u16};
+use std::{cell::{Ref, RefCell}, cmp::min, fs, path::PathBuf, rc::Rc, str::Chars, sync::{Arc, RwLock}, u16};
 
 use anyhow::{bail, Result};
 use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::{Widget, WidgetRef}};
 
-use crate::RC;
+use crate::ARW;
 
 pub trait Mother<T> {
-    fn add_child(&mut self, child: T, index: usize) -> RC<T>;
+    fn add_child(&mut self, child: T, index: usize) -> ARW<T>;
 }
 
 pub trait TryMother<T> {
-    fn try_add_child(&mut self, child: T, index: usize) -> Result<RC<T>>;
+    fn try_add_child(&mut self, child: T, index: usize) -> Result<ARW<T>>;
 }
 
 #[derive(Default, Clone)]
@@ -21,19 +21,19 @@ pub struct Char {
 
 #[derive(Default, Clone)]
 pub struct Span {
-    pub content: Vec<RC<Char>>,
+    pub characters: Vec<ARW<Char>>,
     pub style: Style,
 }
 
 #[derive(Default, Clone)]
 pub struct Line {
-    pub spans: Vec<RC<Span>>,
+    pub spans: Vec<ARW<Span>>,
     pub style: Style,
 }
 
 #[derive(Default, Clone)]
 pub struct Text {
-    pub lines: Vec<RC<Line>>,
+    pub lines: Vec<ARW<Line>>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
@@ -54,7 +54,7 @@ pub struct Layout {
 pub enum LayoutType {
     Container {
         split_direction: SplitDirection,
-        layouts: Vec<RC<Layout>>,
+        layouts: Vec<ARW<Layout>>,
     },
     Content(Text),
 }
@@ -72,14 +72,24 @@ impl Span {
     pub fn raw<T: Into<String>>(content: T) -> Span {
         let content: String = content.into();
         Span {
-            content: content
+            characters: content
                 .chars()
-                .map(|ch| Rc::new(RefCell::new(
+                .map(|ch| Arc::new(RwLock::new(
                     Char { char: ch, style: Style::default() }
                 )))
                 .collect(),
             style: Style::default(),
         }
+    }
+
+    pub fn is_newline(&self) -> bool {
+        if self.characters.len() == 1
+            && self.characters[0].read().unwrap().char == b'\n' as char
+        {
+            return true;
+        }
+        false
+
     }
 }
 
@@ -87,16 +97,16 @@ impl Text {
     pub fn raw(input: String) -> Text {
         Text {
             lines: input
-                .split('\n')
-                .map(|ln| Rc::new(RefCell::new(Line::raw(ln))))
+                .split_inclusive('\n')
+                .map(|ln| Arc::new(RwLock::new(Line::raw(ln))))
                 .collect(),
             ..Default::default()
         }
     }
 
-    pub fn add_line(&mut self, line: RC<Line>, index: usize) {
+    pub fn add_line(&mut self, line: ARW<Line>, index: usize) {
         let len = self.lines.len();
-        let mut lines: Vec<RC<Line>> =
+        let mut lines: Vec<ARW<Line>> =
             self.lines
                 .drain(min(index, len)..len)
                 .collect();
@@ -107,7 +117,7 @@ impl Text {
         self.lines = lines;
     }
 
-    pub fn get_line(&self, index: usize) -> RC<Line> {
+    pub fn get_line(&self, index: usize) -> ARW<Line> {
         self.lines.get(index)
             .unwrap_or(
                 self.lines.get(self.lines.len() - 1).unwrap()
@@ -121,14 +131,14 @@ impl Line {
         Line {
             spans: spans
                 .split_inclusive(' ')
-                .map(|sp| Rc::new(RefCell::new(Span::raw(sp))))
+                .map(|sp| Arc::new(RwLock::new(Span::raw(sp))))
                 .collect(),
             ..Default::default()
         }
     }
-    pub fn add_span(&mut self, span: RC<Span>, index: usize) {
+    pub fn add_span(&mut self, span: ARW<Span>, index: usize) {
         let len = self.spans.len();
-        let mut spans: Vec<RC<Span>> =
+        let mut spans: Vec<ARW<Span>> =
             self.spans
                 .drain(min(index, len)..len)
                 .collect();
@@ -142,13 +152,13 @@ impl Line {
     pub fn char_len(&self) -> u16 {
         self.spans
             .iter()
-            .map(|sp| sp.borrow().content.len() as u16)
+            .map(|sp| sp.read().unwrap().characters.len() as u16)
             .sum()
     }
 }
 
 impl TryMother<Line> for Layout {
-    fn try_add_child(&mut self, child: Line, index: usize) -> Result<RC<Line>> {
+    fn try_add_child(&mut self, child: Line, index: usize) -> Result<ARW<Line>> {
         Ok(match self.layout {
             LayoutType::Container { .. } => bail!("Can't add lines to a container"),
             LayoutType::Content(ref mut text) => text.add_child(child, index),
@@ -159,27 +169,31 @@ impl TryMother<Line> for Layout {
 impl WidgetRef for Char {
     fn render_ref(&self, area:Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
-        buf.get_mut(area.x, area.y).set_symbol(&self.char.to_string());
+        let mut render_char = self.char;
+        if render_char == b'\n' as char {
+            render_char = b' ' as char;
+        }
+        buf.get_mut(area.x, area.y).set_symbol(&render_char.to_string());
     }
 }
 
 impl WidgetRef for Span {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
-        if self.content.len() == 0 {
+        if self.characters.len() == 0 {
             let area = Rect { width: 1, ..area };
             buf.set_style(area, self.style);
             return;
         }
         buf.set_style(area, self.style);
         let mut i: u16 = 0;
-        for ch in self.content.iter() {
+        for ch in self.characters.iter() {
             let area = Rect {
                 x: area.x + i,
                 width: 1,
                 ..area
             };
-            ch.borrow().render_ref(area, buf);
+            ch.read().unwrap().render_ref(area, buf);
             i += 1;
         }
     }
@@ -188,7 +202,8 @@ impl WidgetRef for Span {
 impl WidgetRef for Line {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
-        if self.spans.len() == 0 {
+        let len = self.spans.len();
+        if len == 0 {
             let area = Rect { width: 1, ..area };
             buf.set_style(area, self.style);
             return;
@@ -196,15 +211,15 @@ impl WidgetRef for Line {
         buf.set_style(area, self.style);
         let mut offset: u16 = 0;
         for span in self.spans.iter() {
-            let span = span.borrow();
+            let span = span.read().unwrap();
             let area = Rect {
                 x: area.x + offset,
                 y: area.y,
-                width: span.content.len() as u16,
+                width: span.characters.len() as u16,
                 height: 1,
             };
             span.render_ref(area, buf);
-            offset += span.content.iter().count() as u16;
+            offset += span.characters.iter().count() as u16;
         }
     }
 }
@@ -217,10 +232,10 @@ impl WidgetRef for Text {
             let area = Rect {
                 x: area.x,
                 y: area.y + line_number,
-                width: line.borrow().char_len(),
+                width: line.read().unwrap().char_len(),
                 height: 1,
             };
-            line.borrow().render_ref(area, buf);
+            line.read().unwrap().render_ref(area, buf);
             line_number += 1;
         }
     }
@@ -245,7 +260,7 @@ impl WidgetRef for Layout {
                                 area.width,
                                 offset
                             );
-                            layout.borrow().render_ref(area, buf)
+                            layout.read().unwrap().render_ref(area, buf)
                         }
                     },
                     SplitDirection::Vertical => {
@@ -258,7 +273,7 @@ impl WidgetRef for Layout {
                                 offset,
                                 area.height,
                             );
-                            layout.borrow().render_ref(area, buf)
+                            layout.read().unwrap().render_ref(area, buf)
                         }
                     },
                 }
@@ -292,30 +307,30 @@ impl Widget for Text {
 }
 
 impl Mother<Char> for Span {
-    fn add_child(&mut self, child: Char, index: usize) -> RC<Char> {
-        let len = self.content.len();
-        let mut chars: Vec<RC<Char>> =
-            self.content
+    fn add_child(&mut self, child: Char, index: usize) -> ARW<Char> {
+        let len = self.characters.len();
+        let mut chars: Vec<ARW<Char>> =
+            self.characters
                 .drain(min(index, len)..len)
                 .collect();
 
-        let child = Rc::new(RefCell::new(child));
-        self.content.push(child.clone());
-        self.content.append(&mut chars);
+        let child = Arc::new(RwLock::new(child));
+        self.characters.push(child.clone());
+        self.characters.append(&mut chars);
 
         child
     }
 }
 
 impl Mother<Span> for Line {
-    fn add_child(&mut self, child: Span, index: usize) -> RC<Span> {
+    fn add_child(&mut self, child: Span, index: usize) -> ARW<Span> {
         let len = self.spans.len();
-        let mut spans: Vec<RC<Span>> =
+        let mut spans: Vec<ARW<Span>> =
             self.spans
                 .drain(min(index, len)..len)
                 .collect();
 
-        let child = Rc::new(RefCell::new(child));
+        let child = Arc::new(RwLock::new(child));
         self.spans.push(child.clone());
         self.spans.append(&mut spans);
 
@@ -325,14 +340,14 @@ impl Mother<Span> for Line {
 }
 
 impl Mother<Line> for Text {
-    fn add_child(&mut self, child: Line, index: usize) -> RC<Line> {
+    fn add_child(&mut self, child: Line, index: usize) -> ARW<Line> {
         let len = self.lines.len();
-        let mut lines: Vec<RC<Line>> =
+        let mut lines: Vec<ARW<Line>> =
             self.lines
                 .drain(min(index, len)..len)
                 .collect();
 
-        let child = Rc::new(RefCell::new(child));
+        let child = Arc::new(RwLock::new(child));
         self.lines.push(child.clone());
         self.lines.append(&mut lines);
 
@@ -342,17 +357,17 @@ impl Mother<Line> for Text {
 }
 
 impl TryMother<Layout> for Layout {
-    fn try_add_child(&mut self, child: Layout, index: usize) -> Result<RC<Layout>> {
+    fn try_add_child(&mut self, child: Layout, index: usize) -> Result<ARW<Layout>> {
         Ok(match self.layout {
             LayoutType::Content(_) => bail!("Cant add layout to content"),
             LayoutType::Container { ref mut layouts, .. } => {
                 let len = layouts.len();
-                let mut tail: Vec<RC<Layout>> =
+                let mut tail: Vec<ARW<Layout>> =
                     layouts
                         .drain(min(index, len)..len)
                         .collect();
 
-                let child = Rc::new(RefCell::new(child));
+                let child = Arc::new(RwLock::new(child));
                 layouts.push(child.clone());
                 layouts.append(&mut tail);
 
