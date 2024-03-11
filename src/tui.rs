@@ -1,5 +1,5 @@
 use crossterm::{
-    event::{self, Event}, 
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind}, 
     terminal::{
         disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
         LeaveAlternateScreen,
@@ -12,7 +12,32 @@ use std::{io::stdout, panic, time::{Duration, Instant}};
 
 use crossbeam_channel::{Receiver, Sender};
 use anyhow::{Ok, Result};
-use crate::Msg;
+
+#[derive(PartialEq, Eq)]
+pub enum Msg {
+    ToFirstChild,
+    ToParent,
+    ToLeftSibling,
+    ToRightSibling,
+    Reset,
+    Quit
+}
+
+pub fn handle_keys(key: KeyEvent) -> Option<Msg> {
+    match key.kind {
+        KeyEventKind::Press => match key.code {
+            KeyCode::Char('j') => Some(Msg::ToFirstChild),
+            KeyCode::Char('k') => Some(Msg::ToParent),
+            KeyCode::Char('h') => Some(Msg::ToLeftSibling),
+            KeyCode::Char('l') => Some(Msg::ToRightSibling),
+            KeyCode::Char('r') => Some(Msg::Reset),
+            KeyCode::Char('q') => Some(Msg::Quit),
+            _ => None,
+        },
+        KeyEventKind::Repeat => None,
+        KeyEventKind::Release => None,
+    }
+}
 
 pub fn init_app() -> Result<Terminal<impl Backend>> {
     stdout().execute(EnterAlternateScreen)?;

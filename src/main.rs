@@ -26,6 +26,7 @@ mod zipper;
 mod flipflop;
 
 use primatives::{Layout, LayoutType, Line, Span, SplitDirection, Text};
+use tui::{handle_keys, Msg};
 use zipper::{Node, Zipper};
 
 type RC<T> = Rc<RefCell<T>>;
@@ -48,16 +49,6 @@ enum AppState {
     Stop
 }
 
-#[derive(PartialEq, Eq)]
-pub enum Msg {
-    ToFirstChild,
-    ToParent,
-    ToLeftSibling,
-    ToRightSibling,
-    Reset,
-    Quit
-}
-
 fn update(zipper: Zipper, msg: Msg) -> Zipper {
     match msg {
         Msg::ToParent => zipper.go_back_to_parent().unwrap(),
@@ -74,22 +65,6 @@ fn view(tree: Rc<RefCell<Layout>>, frame: &mut Frame) {
         &*tree,
         frame.size(),
     )
-}
-
-fn handle_keys(key: KeyEvent) -> Option<Msg> {
-    match key.kind {
-        KeyEventKind::Press => match key.code {
-            KeyCode::Char('j') => Some(Msg::ToFirstChild),
-            KeyCode::Char('k') => Some(Msg::ToParent),
-            KeyCode::Char('h') => Some(Msg::ToLeftSibling),
-            KeyCode::Char('l') => Some(Msg::ToRightSibling),
-            KeyCode::Char('r') => Some(Msg::Reset),
-            KeyCode::Char('q') => Some(Msg::Quit),
-            _ => None,
-        },
-        KeyEventKind::Repeat => None,
-        KeyEventKind::Release => None,
-    }
 }
 
 fn handle_events(input: Event) -> Option<Msg> {
