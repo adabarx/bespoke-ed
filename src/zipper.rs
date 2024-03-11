@@ -3,19 +3,26 @@ use std::{cell::RefCell, cmp::min, collections::VecDeque, rc::Rc};
 use ratatui::style::{Color, Style};
 use anyhow::{anyhow, bail, Result};
 
-use crate::{primatives::{Char, Layout, Line, Mother, Span, TryMother}, RC};
+use crate::{primatives::{Char, Layout, LayoutType, Line, Mother, Span, TryMother}, RC};
 
 #[derive(Clone)]
-pub enum ZipperMoveResult {
-    Success(Zipper),
-    Failed(Zipper)
+pub enum MoveResult {
+    Moved(Zipper),
+    DidntMove(Zipper)
 }
 
-impl ZipperMoveResult {
+impl MoveResult {
     pub fn unwrap(self) -> Zipper {
         match self {
-            ZipperMoveResult::Success(zip) => zip,
-            ZipperMoveResult::Failed(zip) => zip,
+            MoveResult::Moved(zip) => zip,
+            MoveResult::DidntMove(zip) => zip,
+        }
+    }
+
+    pub fn inner_mut(&mut self) -> &mut Zipper {
+        match self {
+            MoveResult::Moved(zip) => zip,
+            MoveResult::DidntMove(zip) => zip,
         }
     }
 }
@@ -78,13 +85,13 @@ impl Node {
         // returns an empty vec if the node can carry
         // children but currently doesn't
         match self {
-            Node::Layout(layout) => match layout.borrow().clone() { // TODO: get rid of this clone
-                Layout::Content(text) => Some(
+            Node::Layout(layout) => match layout.borrow().layout.clone() { // TODO: get rid of this clone
+                LayoutType::Content(text) => Some(
                     text.lines.iter()
                         .map(|l| Node::Line(l.clone()))
                         .collect()
                 ),
-                Layout::Container { layouts, .. } => Some(
+                LayoutType::Container { layouts, .. } => Some(
                     layouts.iter()
                         .map(|l| Node::Layout(l.clone()))
                         .collect()
@@ -129,7 +136,7 @@ impl Node {
             Node::Line(line) => line.borrow_mut().style = Style::default(),
             Node::Span(span) => span.borrow_mut().style = Style::default(),
             Node::Char(char) => char.borrow_mut().style = Style::default(),
-            Node::Layout(_) => (),
+            Node::Layout(layout) => layout.borrow_mut().style = Style::default(),
         }
     }
 }
@@ -155,7 +162,7 @@ impl Zipper {
         }
     }
 
-    fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
+    pub fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
         self.focus.try_add_child(child.clone(), index)?;
 
         let len = self.children.len();
@@ -165,156 +172,206 @@ impl Zipper {
         Ok(())
     }
 
-    pub fn move_to_child(mut self, index: usize) -> ZipperMoveResult {
-        if index >= self.children.len() { return ZipperMoveResult::Failed(self) }
-        self.focus.no_highlight();
-
-        let left = self.children[0..index].iter()
-            .cloned()
-            .collect();
-        let right = self.children[index + 1..self.children.len()].iter()
-            .cloned()
-            .collect();
-        let mut focus = self.children[index].clone();
-        focus.highlight();
-
-        let children = focus.get_children().unwrap_or(Vec::new());
-        let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Parent{ index } });
-
-        ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
-    }
-
-    pub fn move_to_prev(mut self) -> Option<Zipper> {
-        if let Some(crumb) = self.previous {
-            self.focus.no_highlight();
-            let mut rv = *crumb.zipper;
-            rv.focus.highlight();
-            Some(rv)
-        } else {
-            None
+    fn mother(self, i: isize) -> (MoveResult, isize) {
+        if self.previous.is_none() { return (MoveResult::DidntMove(self), i) }
+        let prev = self.previous.unwrap();
+        match prev.direction {
+            PrevDir::Parent { index } => (MoveResult::Moved(*prev.zipper), index as isize - i),
+            PrevDir::Left => prev.zipper.mother(i - 1),
+            PrevDir::Right => prev.zipper.mother(i + 1),
         }
     }
 
-    pub fn move_left(mut self) -> ZipperMoveResult {
+    fn right_aunt(self) -> MoveResult {
+        let og = self.clone();
+        let result = self.mother(0).0;
+        if let MoveResult::DidntMove(_) = result {
+            return MoveResult::DidntMove(og);
+        }
+        let result = result.unwrap().right_sister();
+        if let MoveResult::DidntMove(_) = result {
+            return MoveResult::DidntMove(og);
+        }
+        result
+    }
+
+    fn left_aunt(self) -> MoveResult {
+        let og = self.clone();
+        let result = self.mother(0).0;
+        if let MoveResult::DidntMove(_) = result {
+            return MoveResult::DidntMove(og);
+        }
+        let result = result.unwrap().left_sister();
+        if let MoveResult::DidntMove(_) = result {
+            return MoveResult::DidntMove(og);
+        }
+        result
+    }
+
+    fn right_cousin(self, index: usize) -> MoveResult {
+        let og = self.clone();
+        let result = self.right_aunt();
+        if let MoveResult::DidntMove(_) = result {
+            return MoveResult::DidntMove(og);
+        }
+        let result = result.unwrap().daughter(index);
+        if let MoveResult::DidntMove(_) = result {
+            return MoveResult::DidntMove(og);
+        }
+        result
+    }
+
+    fn left_cousin(self, index: usize) -> MoveResult {
+        let og = self.clone();
+        let result = self.left_aunt();
+        if let MoveResult::DidntMove(_) = result {
+            return MoveResult::DidntMove(og);
+        }
+        let result = result.unwrap().daughter(index);
+        if let MoveResult::DidntMove(_) = result {
+            return MoveResult::DidntMove(og);
+        }
+        result
+    }
+
+    fn daughter(self, mut index: usize) -> MoveResult {
+        let len = self.children.len();
+        if len == 0 { return MoveResult::DidntMove(self) }
+        if index >= len { 
+            index = len - 1;
+        }
+
+        let left = self.children[0..index]
+            .iter()
+            .cloned()
+            .collect();
+        let right = self.children[index + 1..len]
+            .iter()
+            .cloned()
+            .collect();
+        let focus = self.children[index].clone();
+        let children = focus.get_children().unwrap_or(Vec::new());
+        let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Parent{ index } });
+        
+        MoveResult::Moved(Zipper { previous, focus, children, left, right })
+    }
+
+    fn left_sister(self) -> MoveResult {
         if let Some(prev) = self.previous.as_ref() {
             if prev.direction == PrevDir::Left {
-                return ZipperMoveResult::Success(self.move_to_prev().unwrap());
+                return MoveResult::Moved(self.move_to_prev().unwrap());
             }
         }
 
         let mut left = self.left.clone();
-        let mut focus = if let Some(node) = left.pop() { node }
-            else { return ZipperMoveResult::Failed(self); };
-
-        self.focus.no_highlight();
-        focus.highlight();
+        let focus = if let Some(node) = left.pop() { node }
+            else { return MoveResult::DidntMove(self); };
 
         let mut right = self.right.clone();
         right.push_front(self.focus.clone());
         let children = focus.get_children().unwrap_or(Vec::new());
         let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Right });
 
-        ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
+        MoveResult::Moved(Zipper { focus, previous, children, left, right })
     }
 
-    pub fn move_right(mut self) -> ZipperMoveResult {
+    fn right_sister(self) -> MoveResult {
         if let Some(prev) = self.previous.as_ref() {
             if prev.direction == PrevDir::Right {
-                return ZipperMoveResult::Success(self.move_to_prev().unwrap());
+                return MoveResult::Moved(self.move_to_prev().unwrap());
             }
         }
 
         let mut right = self.right.clone();
-        let mut focus = if let Some(node) = right.pop_front() { node }
-            else { return ZipperMoveResult::Failed(self); };
-
-        self.focus.no_highlight();
-        focus.highlight();
+        let focus = if let Some(node) = right.pop_front() { node }
+            else { return MoveResult::DidntMove(self); };
 
         let mut left = self.left.clone();
         left.push(self.focus.clone());
         let children = focus.get_children().unwrap_or(Vec::new());
         let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Left });
 
-        ZipperMoveResult::Success(Zipper { focus, previous, children, left, right })
+        MoveResult::Moved(Zipper { focus, previous, children, left, right })
     }
 
-    pub fn track_back_to_parent(mut self) -> ZipperMoveResult {
-        if let Some(mut zip) = self.previous {
-            self.focus.no_highlight();
-            match zip.direction {
-                PrevDir::Parent { .. } => {
-                    zip.zipper.focus.highlight();
-                    ZipperMoveResult::Success(*zip.zipper)
-                },
-                _ => {
-                    let mut crumb = match zip.zipper.track_back_to_parent() {
-                        ZipperMoveResult::Success(z) => z,
-                        ZipperMoveResult::Failed(_) =>
-                            panic!("shouldn't be able to fail here"),
-                    };
-                    
-                    crumb.focus.highlight();
-                    ZipperMoveResult::Success(crumb)
-                }
-            }
-        } else {
-            ZipperMoveResult::Failed(self)
+    fn left_sister_or_cousin(self) -> MoveResult {
+        let og = self.clone();
+        let sister = self.left_sister();
+        if let MoveResult::Moved(_) = sister {
+            return sister;
         }
+        og.left_cousin(usize::MAX)
     }
 
-    pub fn move_right_or_cousin(self) -> ZipperMoveResult {
-        let result = self.move_right();
-        match result {
-            // first, move right
-            ZipperMoveResult::Success(_) => result,
-            ZipperMoveResult::Failed(ref zip) => match zip.clone().track_back_to_parent() {
-                // if that fails, go to the parent
-                ZipperMoveResult::Failed(_) => result.clone(),
-                ZipperMoveResult::Success(zip) => match zip.clone().move_right() {
-                    // move to the parent's right sibling
-                    ZipperMoveResult::Failed(_) => result.clone(),
-                    ZipperMoveResult::Success(zip) => match zip.clone().move_to_child(0) {
-                        // then move into your right piblings leftmost child
-                        ZipperMoveResult::Failed(_) => result.clone(),
-                        ZipperMoveResult::Success(zip) => ZipperMoveResult::Success(zip),
-                    }
-                }
-            }
+    fn right_sister_or_cousin(self) -> MoveResult {
+        let og = self.clone();
+        let sister = self.right_sister();
+        if let MoveResult::Moved(_) = sister {
+            return sister;
         }
+        og.right_cousin(0)
     }
 
-    pub fn move_left_or_cousin(self) -> ZipperMoveResult {
-        let result = self.move_left();
-        match result {
-            // first, move left
-            ZipperMoveResult::Success(_) => result,
-            ZipperMoveResult::Failed(ref zip) => match zip.clone().track_back_to_parent() {
-                // if that fails, go to the parent
-                ZipperMoveResult::Failed(_) => result,
-                ZipperMoveResult::Success(mut zip) => match zip.clone().move_left() {
-                    // move to the parent's left sibling
-                    ZipperMoveResult::Failed(_) => {
-                        zip.focus.no_highlight();
-                        let mut rv = result.unwrap();
-                        rv.focus.highlight();
-                        ZipperMoveResult::Failed(rv)
-                    },
-                    ZipperMoveResult::Success(mut zip) => {
-                        match zip.clone().move_to_child(zip.children.len()) {
-                            // then move into your left piblings rightmost child
-                            ZipperMoveResult::Failed(_) => {
-                                zip.focus.no_highlight();
-                                let mut rv = result.unwrap();
-                                rv.focus.highlight();
-                                ZipperMoveResult::Failed(rv)
-                            },
-                            ZipperMoveResult::Success(zip) => ZipperMoveResult::Success(zip),
-                        }
-                    }
-                }
-            }
-        }
+    fn prev(self) -> Option<Zipper> {
+        if self.previous.is_none() { return None }
+        Some(*self.previous.unwrap().zipper)
+    }
+
+    pub fn move_to_child(mut self, index: usize) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.daughter(index);
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn move_to_prev(mut self) -> Option<Zipper> {
+        self.focus.no_highlight();
+        let mut rv = self.prev()?;
+        rv.focus.highlight();
+        Some(rv)
+    }
+
+    pub fn try_move_right(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.right_sister();
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn try_move_left(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.left_sister();
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn move_left_catch_ignore(self) -> Zipper {
+        self.try_move_right().unwrap()
+    }
+
+    pub fn move_right_catch_ignore(self) -> Zipper {
+        self.try_move_right().unwrap()
+    }
+
+    pub fn go_back_to_parent(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.mother(0).0;
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn move_right_or_cousin(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.right_sister_or_cousin();
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn move_left_or_cousin(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.left_sister_or_cousin();
+        result.inner_mut().focus.highlight();
+        result
     }
 
     pub fn add_child(mut self, node: Node, index: usize) -> Zipper {

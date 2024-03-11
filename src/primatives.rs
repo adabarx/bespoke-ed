@@ -106,9 +106,9 @@ impl Mother<Line> for Text {
 
 impl TryMother<Layout> for Layout {
     fn try_add_child(&mut self, child: Layout, index: usize) -> Result<RC<Layout>> {
-        Ok(match self {
-            Layout::Content(_) => bail!("Cant add layout to content"),
-            Layout::Container { layouts, .. } => {
+        Ok(match self.layout {
+            LayoutType::Content(_) => bail!("Cant add layout to content"),
+            LayoutType::Container { mut layouts, .. } => {
                 let len = layouts.len();
                 let mut tail: Vec<RC<Layout>> =
                     layouts
@@ -298,7 +298,13 @@ pub enum SplitDirection {
 }
 
 #[derive(Clone)]
-pub enum Layout {
+pub struct Layout {
+    pub style: Style,
+    pub layout: LayoutType,
+}
+
+#[derive(Clone)]
+pub enum LayoutType {
     Container {
         split_direction: SplitDirection,
         layouts: Vec<RC<Layout>>,
@@ -306,20 +312,30 @@ pub enum Layout {
     Content(Text),
 }
 
+impl Layout {
+    pub fn new(layout: LayoutType) -> Self {
+        Self {
+            layout,
+            style: Style::default()
+        }
+    }
+}
+
 impl TryMother<Line> for Layout {
     fn try_add_child(&mut self, child: Line, index: usize) -> Result<RC<Line>> {
-        Ok(match self {
-            Layout::Container { .. } => bail!("Can't add lines to a container"),
-            Layout::Content(text) => text.add_child(child, index),
+        Ok(match self.layout {
+            LayoutType::Container { .. } => bail!("Can't add lines to a container"),
+            LayoutType::Content(mut text) => text.add_child(child, index),
         })
     }
 }
 
 impl<'a> WidgetRef for Layout {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        match self {
-            Layout::Content(content) => content.render_ref(area, buf),
-            Layout::Container { split_direction, layouts } => {
+        buf.set_style(area, self.style);
+        match self.layout {
+            LayoutType::Content(content) => content.render_ref(area, buf),
+            LayoutType::Container { split_direction, layouts } => {
                 let windows: u16 = layouts.len().try_into().unwrap();
                 if windows == 0 { return (); }
                 match split_direction {

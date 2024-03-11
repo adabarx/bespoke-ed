@@ -25,7 +25,7 @@ mod primatives;
 mod zipper;
 mod flipflop;
 
-use primatives::{Span, Line, Text, Layout, SplitDirection};
+use primatives::{Layout, LayoutType, Line, Span, SplitDirection, Text};
 use zipper::{Node, Zipper};
 
 type RC<T> = Rc<RefCell<T>>;
@@ -60,7 +60,7 @@ pub enum Msg {
 
 fn update(zipper: Zipper, msg: Msg) -> Zipper {
     match msg {
-        Msg::ToParent => zipper.track_back_to_parent().unwrap(),
+        Msg::ToParent => zipper.go_back_to_parent().unwrap(),
         Msg::ToFirstChild => zipper.move_to_child(0).unwrap(),
         Msg::ToLeftSibling => zipper.move_left_or_cousin().unwrap(),
         Msg::ToRightSibling => zipper.move_right_or_cousin().unwrap(),
@@ -120,12 +120,12 @@ fn main() -> Result<()> {
     // set up and initial draw
     let model = Model {
         app_state: AppState::Running,
-        layout: Rc::new(RefCell::new(Layout::Container {
+        layout: Rc::new(RefCell::new(Layout::new(LayoutType::Container {
             split_direction: SplitDirection::Horizontal,
             layouts: vec![
-                Rc::new(RefCell::new(Layout::Content(Text::raw(content)))),
+                Rc::new(RefCell::new(Layout::new(LayoutType::Content(Text::raw(content))))),
             ]
-        }))
+        })))
     };
 
     let mut zipper = Zipper::new(Node::Layout(model.layout.clone()));
