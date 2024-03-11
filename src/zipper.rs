@@ -29,7 +29,7 @@ impl MoveResult {
 
 #[derive(Clone, PartialEq, Eq)]
 enum PrevDir {
-    Parent { index: usize },
+    Parent,
     Left,
     Right,
 }
@@ -172,19 +172,19 @@ impl Zipper {
         Ok(())
     }
 
-    fn mother(self, i: isize) -> (MoveResult, isize) {
-        if self.previous.is_none() { return (MoveResult::DidntMove(self), i) }
+    fn mother(self) -> MoveResult {
+        if self.previous.is_none() { return MoveResult::DidntMove(self) }
         let prev = self.previous.unwrap();
         match prev.direction {
-            PrevDir::Parent { index } => (MoveResult::Moved(*prev.zipper), index as isize - i),
-            PrevDir::Left => prev.zipper.mother(i - 1),
-            PrevDir::Right => prev.zipper.mother(i + 1),
+            PrevDir::Parent => MoveResult::Moved(*prev.zipper),
+            PrevDir::Left => prev.zipper.mother(),
+            PrevDir::Right => prev.zipper.mother(),
         }
     }
 
     fn right_aunt(self) -> MoveResult {
         let og = self.clone();
-        let result = self.mother(0).0;
+        let result = self.mother();
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
@@ -197,7 +197,7 @@ impl Zipper {
 
     fn left_aunt(self) -> MoveResult {
         let og = self.clone();
-        let result = self.mother(0).0;
+        let result = self.mother();
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
@@ -251,7 +251,7 @@ impl Zipper {
             .collect();
         let focus = self.children[index].clone();
         let children = focus.get_children().unwrap_or(Vec::new());
-        let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Parent{ index } });
+        let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Parent });
         
         MoveResult::Moved(Zipper { previous, focus, children, left, right })
     }
@@ -355,7 +355,7 @@ impl Zipper {
 
     pub fn go_back_to_parent(mut self) -> MoveResult {
         self.focus.no_highlight();
-        let mut result = self.mother(0).0;
+        let mut result = self.mother();
         result.inner_mut().focus.highlight();
         result
     }
