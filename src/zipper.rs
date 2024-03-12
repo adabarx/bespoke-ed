@@ -5,35 +5,43 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::{primatives::{Char, Layout, LayoutType, Line, Mother, Span, TryMother}, ARW};
 
-trait TreeMove {
+trait Zipper {
+    fn prev(self) -> Option<LayoutZipper>;
+
     fn mother(self) -> MoveResult;
-    fn right_aunt(self) -> MoveResult;
-    fn left_aunt(self) -> MoveResult;
-    fn right_cousin(self, index: usize) -> MoveResult;
-    fn left_cousin(self, index: usize) -> MoveResult;
+    fn try_add_child(&mut self, child: Node, index: usize) -> Result<()>;
     fn daughter(self, index: usize) -> MoveResult;
+
     fn left_sister(self) -> MoveResult;
     fn right_sister(self) -> MoveResult;
+
+    fn left_aunt(self) -> MoveResult;
+    fn right_aunt(self) -> MoveResult;
+
+    fn left_cousin(self, index: usize) -> MoveResult;
+    fn right_cousin(self, index: usize) -> MoveResult;
+
     fn left_sister_or_cousin(self) -> MoveResult;
     fn right_sister_or_cousin(self) -> MoveResult;
-    fn prev(self) -> Option<Zipper>;
+
+    fn replace_focus(self, new_node: Node) -> LayoutZipper;
 }
 
 #[derive(Clone)]
 pub enum MoveResult {
-    Moved(Zipper),
-    DidntMove(Zipper)
+    Moved(LayoutZipper),
+    DidntMove(LayoutZipper)
 }
 
 impl MoveResult {
-    pub fn unwrap(self) -> Zipper {
+    pub fn unwrap(self) -> LayoutZipper {
         match self {
             MoveResult::Moved(zip) => zip,
             MoveResult::DidntMove(zip) => zip,
         }
     }
 
-    pub fn inner_mut(&mut self) -> &mut Zipper {
+    pub fn inner_mut(&mut self) -> &mut LayoutZipper {
         match self {
             MoveResult::Moved(zip) => zip,
             MoveResult::DidntMove(zip) => zip,
@@ -50,7 +58,7 @@ enum PrevDir {
 
 #[derive(Clone)]
 struct Breadcrumb {
-    zipper: Box<Zipper>,
+    zipper: Box<LayoutZipper>,
     direction: PrevDir,
 }
 
@@ -160,8 +168,12 @@ impl Node {
     }
 }
 
+pub struct LayoutCrumb {
+
+}
+
 #[derive(Clone)]
-pub struct Zipper {
+pub struct LayoutZipper {
     previous: Option<Breadcrumb>,
     focus: Node,
     children: Vec<Node>,
@@ -169,7 +181,7 @@ pub struct Zipper {
     right: VecDeque<Node>,
 }
 
-impl Zipper {
+impl LayoutZipper {
     pub fn new(root: Node) -> Self {
         let children = root.get_children().unwrap();
         Self {
@@ -198,7 +210,7 @@ impl Zipper {
         result
     }
 
-    pub fn move_to_prev(mut self) -> Option<Zipper> {
+    pub fn move_to_prev(mut self) -> Option<LayoutZipper> {
         self.focus.no_highlight();
         let mut rv = self.prev().unwrap();
         rv.focus.highlight();
@@ -219,11 +231,11 @@ impl Zipper {
         result
     }
 
-    pub fn move_left_catch_ignore(self) -> Zipper {
+    pub fn move_left_catch_ignore(self) -> LayoutZipper {
         self.try_move_right().unwrap()
     }
 
-    pub fn move_right_catch_ignore(self) -> Zipper {
+    pub fn move_right_catch_ignore(self) -> LayoutZipper {
         self.try_move_right().unwrap()
     }
 
@@ -248,7 +260,7 @@ impl Zipper {
         result
     }
 
-    pub fn add_child(mut self, node: Node, index: usize) -> Zipper {
+    pub fn add_child(mut self, node: Node, index: usize) -> LayoutZipper {
         let len = self.children.len();
         if index >= len {
             self.children.push(node);
@@ -265,18 +277,27 @@ impl Zipper {
         self
     }
 
-    pub fn replace_focus(mut self, new_node: Node) -> Zipper {
+    pub fn replace_focus(mut self, new_node: Node) -> LayoutZipper {
         self.children = new_node.get_children().unwrap_or(Vec::new());
         self.focus = new_node;
         self
     }
 }
 
-impl TreeMove for MoveResult {
+impl Zipper for MoveResult {
     fn mother(self) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
         self.unwrap().mother()
     }
+
+    fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
+        self.unwrap().try_add_child(child, index)
+    }
+
+    fn replace_focus(self, new_node: Node) -> LayoutZipper {
+        if let MoveResult::DidntMove(_) = self { return self.unwrap() }
+        self.unwrap().replace_focus(new_node)
+    }    
 
     fn right_aunt(self) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
@@ -323,14 +344,14 @@ impl TreeMove for MoveResult {
         self.unwrap().right_sister_or_cousin()
     }
 
-    fn prev(self) -> Option<Zipper> {
+    fn prev(self) -> Option<LayoutZipper> {
         if let MoveResult::DidntMove(_) = self { return None }
         self.unwrap().prev()
     }
 
 }
 
-impl TreeMove for Zipper {
+impl Zipper for LayoutZipper {
     fn mother(self) -> MoveResult {
         if self.previous.is_none() { return MoveResult::DidntMove(self) }
         let prev = self.previous.unwrap();
@@ -339,6 +360,14 @@ impl TreeMove for Zipper {
             PrevDir::Left => prev.zipper.mother(),
             PrevDir::Right => prev.zipper.mother(),
         }
+    }
+
+    fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
+        let children = &mut self.children;
+        let tail = &mut children.drain(index..).collect();
+        children.push(child);
+        children.append(tail);
+        Ok(())
     }
 
     fn right_aunt(self) -> MoveResult {
@@ -412,7 +441,7 @@ impl TreeMove for Zipper {
         let children = focus.get_children().unwrap_or(Vec::new());
         let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Parent });
         
-        MoveResult::Moved(Zipper { previous, focus, children, left, right })
+        MoveResult::Moved(LayoutZipper { previous, focus, children, left, right })
     }
 
     fn left_sister(self) -> MoveResult {
@@ -431,7 +460,7 @@ impl TreeMove for Zipper {
         let children = focus.get_children().unwrap_or(Vec::new());
         let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Right });
 
-        MoveResult::Moved(Zipper { focus, previous, children, left, right })
+        MoveResult::Moved(LayoutZipper { focus, previous, children, left, right })
     }
 
     fn right_sister(self) -> MoveResult {
@@ -450,7 +479,7 @@ impl TreeMove for Zipper {
         let children = focus.get_children().unwrap_or(Vec::new());
         let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Left });
 
-        MoveResult::Moved(Zipper { focus, previous, children, left, right })
+        MoveResult::Moved(LayoutZipper { focus, previous, children, left, right })
     }
 
     fn left_sister_or_cousin(self) -> MoveResult {
@@ -471,9 +500,14 @@ impl TreeMove for Zipper {
         og.right_cousin(0)
     }
 
-    fn prev(self) -> Option<Zipper> {
+    fn prev(self) -> Option<LayoutZipper> {
         if self.previous.is_none() { return None }
         Some(*self.previous.unwrap().zipper)
     }
 
+    fn replace_focus(mut self, new_node: Node) -> LayoutZipper {
+        self.children = new_node.get_children().unwrap_or(Vec::new()).clone();
+        self.focus = new_node.clone();
+        self
+    }
 }

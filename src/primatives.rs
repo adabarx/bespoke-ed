@@ -171,7 +171,7 @@ impl WidgetRef for Char {
         buf.set_style(area, self.style);
         let mut render_char = self.char;
         if render_char == b'\n' as char {
-            render_char = b' ' as char;
+            render_char = '' as char;
         }
         buf.get_mut(area.x, area.y).set_symbol(&render_char.to_string());
     }

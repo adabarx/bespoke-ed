@@ -32,7 +32,7 @@ mod flipflop;
 mod input;
 
 use primatives::{Layout, LayoutType, Line, Span, SplitDirection, Text};
-use zipper::{Node, Zipper};
+use zipper::{LayoutZipper, Node};
 
 type ARW<T> = Arc<RwLock<T>>;
 
@@ -57,7 +57,11 @@ enum State {
     ShutDown,
 }
 
-fn update(model: &'static Model, zipper: Zipper, msg: Msg) -> Zipper {
+fn update(
+    model: &'static Model,
+    zipper: LayoutZipper,
+    msg: Msg
+) -> LayoutZipper {
     match msg {
         Msg::Normal(nc) => update_normal(model, zipper, nc),
         Msg::Insert(ic) => update_insert(model, zipper, ic),
@@ -69,7 +73,11 @@ fn update(model: &'static Model, zipper: Zipper, msg: Msg) -> Zipper {
     }
 }
 
-fn update_normal(model: &'static Model, mut zipper: Zipper, msg: NormalCommand) -> Zipper {
+fn update_normal(
+    model: &'static Model,
+    mut zipper: LayoutZipper,
+    msg: NormalCommand
+) -> LayoutZipper {
     match msg {
         NormalCommand::Quit => *model.state.write().unwrap() = State::ShutDown,
         NormalCommand::NextChar => zipper = zipper.move_right_or_cousin().unwrap(),
@@ -99,7 +107,7 @@ fn update_normal(model: &'static Model, mut zipper: Zipper, msg: NormalCommand) 
     zipper
 }
 
-fn update_insert(_model: &'static Model, zipper: Zipper, msg: InsertCommand) -> Zipper {
+fn update_insert(model: &'static Model, zipper: LayoutZipper, msg: InsertCommand) -> LayoutZipper {
     match msg {
         InsertCommand::Insert(_ch) => (),
         InsertCommand::Replace(_ch) => (),
@@ -107,6 +115,7 @@ fn update_insert(_model: &'static Model, zipper: Zipper, msg: InsertCommand) -> 
         InsertCommand::Backspace => (),
         InsertCommand::NewLine => (),
         InsertCommand::NewLineBefore => (),
+        InsertCommand::Normal => *model.state.write().unwrap() = State::Normal,
     }
     zipper
 }
@@ -118,7 +127,7 @@ pub fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
 }
 
 fn control_loop(model: &'static Model, tick_rate: Duration, input_rx: Receiver<Msg>) {
-    let mut zipper = Zipper::new(Node::Layout(model.layout.clone()));
+    let mut zipper = LayoutZipper::new(Node::Layout(model.layout.clone()));
     let mut last_tick = Instant::now();
     loop {
         if *model.state.read().unwrap() == State::ShutDown { break }
