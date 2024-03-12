@@ -5,6 +5,20 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::{primatives::{Char, Layout, LayoutType, Line, Mother, Span, TryMother}, ARW};
 
+trait TreeMove {
+    fn mother(self) -> MoveResult;
+    fn right_aunt(self) -> MoveResult;
+    fn left_aunt(self) -> MoveResult;
+    fn right_cousin(self, index: usize) -> MoveResult;
+    fn left_cousin(self, index: usize) -> MoveResult;
+    fn daughter(self, index: usize) -> MoveResult;
+    fn left_sister(self) -> MoveResult;
+    fn right_sister(self) -> MoveResult;
+    fn left_sister_or_cousin(self) -> MoveResult;
+    fn right_sister_or_cousin(self) -> MoveResult;
+    fn prev(self) -> Option<Zipper>;
+}
+
 #[derive(Clone)]
 pub enum MoveResult {
     Moved(Zipper),
@@ -80,22 +94,24 @@ impl Node {
             _ => Err(anyhow!("this child does not please mother")),
         }
     }
+
     pub fn get_children(&self) -> Option<Vec<Node>> {
         // returns None if node doesn't carry children
         // returns an empty vec if the node can carry
         // children but currently doesn't
         match self {
-            Node::Layout(layout) => match layout.read().unwrap().layout.clone() { // TODO: get rid of this clone
-                LayoutType::Content(text) => Some(
-                    text.lines.iter()
+            Node::Layout(layout) => {
+                let layout = layout.read().unwrap().layout.clone();
+                Some(match layout {
+                    LayoutType::Content(text) => text.lines
+                        .iter()
                         .map(|l| Node::Line(l.clone()))
-                        .collect()
-                ),
-                LayoutType::Container { layouts, .. } => Some(
-                    layouts.iter()
+                        .collect(),
+                    LayoutType::Container { layouts, .. } => layouts
+                        .iter()
                         .map(|l| Node::Layout(l.clone()))
-                        .collect()
-                ),
+                        .collect(),
+                })
             },
             Node::Span(span) => Some(
                 span.read().unwrap().characters
@@ -175,6 +191,146 @@ impl Zipper {
         Ok(())
     }
 
+    pub fn move_to_child(mut self, index: usize) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.daughter(index);
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn move_to_prev(mut self) -> Option<Zipper> {
+        self.focus.no_highlight();
+        let mut rv = self.prev().unwrap();
+        rv.focus.highlight();
+        Some(rv)
+    }
+
+    pub fn try_move_right(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.right_sister();
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn try_move_left(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.left_sister();
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn move_left_catch_ignore(self) -> Zipper {
+        self.try_move_right().unwrap()
+    }
+
+    pub fn move_right_catch_ignore(self) -> Zipper {
+        self.try_move_right().unwrap()
+    }
+
+    pub fn go_back_to_parent(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.mother();
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn move_right_or_cousin(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.right_sister_or_cousin();
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn move_left_or_cousin(mut self) -> MoveResult {
+        self.focus.no_highlight();
+        let mut result = self.left_sister_or_cousin();
+        result.inner_mut().focus.highlight();
+        result
+    }
+
+    pub fn add_child(mut self, node: Node, index: usize) -> Zipper {
+        let len = self.children.len();
+        if index >= len {
+            self.children.push(node);
+            return self;
+        }
+
+        let mut children = self.children[0..index].to_vec();
+        let mut child = vec![node];
+        let mut the_rest = self.children[index + 1..len].to_vec();
+        children.append(&mut child);
+        children.append(&mut the_rest);
+
+        self.children = children;
+        self
+    }
+
+    pub fn replace_focus(mut self, new_node: Node) -> Zipper {
+        self.children = new_node.get_children().unwrap_or(Vec::new());
+        self.focus = new_node;
+        self
+    }
+}
+
+impl TreeMove for MoveResult {
+    fn mother(self) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().mother()
+    }
+
+    fn right_aunt(self) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().right_aunt()
+    }
+
+    fn left_aunt(self) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().left_aunt()
+    }
+
+    fn right_cousin(self, index: usize) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().right_cousin(index)
+    }
+
+    fn left_cousin(self, index: usize) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().left_cousin(index)
+    }
+
+    fn daughter(self, index: usize) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().daughter(index)
+    }
+
+    fn left_sister(self) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().left_sister()
+    }
+
+    fn right_sister(self) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().right_sister()
+    }
+
+    fn left_sister_or_cousin(self) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().left_sister_or_cousin()
+    }
+
+    fn right_sister_or_cousin(self) -> MoveResult {
+        if let MoveResult::DidntMove(_) = self { return self }
+        self.unwrap().right_sister_or_cousin()
+    }
+
+    fn prev(self) -> Option<Zipper> {
+        if let MoveResult::DidntMove(_) = self { return None }
+        self.unwrap().prev()
+    }
+
+}
+
+impl TreeMove for Zipper {
     fn mother(self) -> MoveResult {
         if self.previous.is_none() { return MoveResult::DidntMove(self) }
         let prev = self.previous.unwrap();
@@ -320,84 +476,4 @@ impl Zipper {
         Some(*self.previous.unwrap().zipper)
     }
 
-    pub fn move_to_child(mut self, index: usize) -> MoveResult {
-        self.focus.no_highlight();
-        let mut result = self.daughter(index);
-        result.inner_mut().focus.highlight();
-        result
-    }
-
-    pub fn move_to_prev(mut self) -> Option<Zipper> {
-        self.focus.no_highlight();
-        let mut rv = self.prev().unwrap();
-        rv.focus.highlight();
-        Some(rv)
-    }
-
-    pub fn try_move_right(mut self) -> MoveResult {
-        self.focus.no_highlight();
-        let mut result = self.right_sister();
-        result.inner_mut().focus.highlight();
-        result
-    }
-
-    pub fn try_move_left(mut self) -> MoveResult {
-        self.focus.no_highlight();
-        let mut result = self.left_sister();
-        result.inner_mut().focus.highlight();
-        result
-    }
-
-    pub fn move_left_catch_ignore(self) -> Zipper {
-        self.try_move_right().unwrap()
-    }
-
-    pub fn move_right_catch_ignore(self) -> Zipper {
-        self.try_move_right().unwrap()
-    }
-
-    pub fn go_back_to_parent(mut self) -> MoveResult {
-        self.focus.no_highlight();
-        let mut result = self.mother();
-        result.inner_mut().focus.highlight();
-        result
-    }
-
-    pub fn move_right_or_cousin(mut self) -> MoveResult {
-        self.focus.no_highlight();
-        let mut result = self.right_sister_or_cousin();
-        result.inner_mut().focus.highlight();
-        result
-    }
-
-    pub fn move_left_or_cousin(mut self) -> MoveResult {
-        self.focus.no_highlight();
-        let mut result = self.left_sister_or_cousin();
-        result.inner_mut().focus.highlight();
-        result
-    }
-
-    pub fn add_child(mut self, node: Node, index: usize) -> Zipper {
-        let len = self.children.len();
-        if index >= len {
-            self.children.push(node);
-            return self;
-        }
-
-        let mut children = self.children[0..index].to_vec();
-        let mut child = vec![node];
-        let mut the_rest = self.children[index + 1..len].to_vec();
-        children.append(&mut child);
-        children.append(&mut the_rest);
-
-        self.children = children;
-        self
-    }
-
-    pub fn replace_focus(mut self, new_node: Node) -> Zipper {
-        self.children = new_node.get_children().unwrap_or(Vec::new());
-        self.focus = new_node;
-        self
-    }
 }
-

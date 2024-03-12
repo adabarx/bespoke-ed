@@ -1,10 +1,11 @@
-use std::{sync::{atomic::AtomicBool, Arc}, time::{Duration, Instant}};
+use std::{ops::ControlFlow, sync::{atomic::AtomicBool, Arc}, time::{Duration, Instant}};
 
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
+use ratatui::style::Style;
 
-use crate::{primatives::Char, AppState, Model, Quit, ARW};
+use crate::{primatives::Char, State, Model, Quit, ARW};
 
 pub fn input_listener(
     model: &'static Model,
@@ -13,7 +14,7 @@ pub fn input_listener(
 ) -> Result<()> {
     let mut last_tick = Instant::now();
     loop {
-        if *model.state.read().unwrap() == AppState::ShutDown { break }
+        if *model.state.read().unwrap() == State::ShutDown { break }
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)? {
@@ -27,7 +28,8 @@ pub fn input_listener(
 }
 
 #[derive(PartialEq, Eq)]
-pub enum NormalCommands {
+pub enum NormalCommand {
+    Quit,
     InsertMode,
     InsertModeAfterCursor,
     NextChar,
@@ -41,11 +43,15 @@ pub enum InsertCommand {
     Insert(Char),
     Replace(Char),
     Delete,
+    Backspace,
+    NewLine,
+    NewLineBefore,
+    Normal,
 }
 
 #[derive(PartialEq, Eq)]
 pub enum Msg {
-    Normal(NormalCommands),
+    Normal(NormalCommand),
     Insert(InsertCommand),
     NormalMode,
     ToFirstChild,
@@ -87,20 +93,19 @@ pub fn handle_keys(model: &'static Model, key: KeyEvent) -> Option<Msg> {
         _ => ()
     }
     match model.state.read().unwrap().clone() {
-        AppState::Normal => handle_normal(key),
-        AppState::Travel => handle_travel(key),
-        AppState::Insert => handle_insert(key),
-        AppState::ShutDown => Some(Msg::ShutDown),
+        State::Normal => Some(Msg::Normal(handle_normal(model, key)?)),
+        State::Insert => Some(Msg::Insert(handle_insert(model, key)?)),
+        State::ShutDown => Some(Msg::ShutDown),
     }
 }
 
-fn handle_normal(key: KeyEvent) -> Option<Msg> {
+fn handle_normal(_model: &'static Model, key: KeyEvent) -> Option<NormalCommand> {
     match key.kind {
         KeyEventKind::Press => match key.code {
-            KeyCode::Char('h') => Some(Msg::Normal(NormalCommands::PrevChar)),
-            KeyCode::Char('j') => Some(Msg::Normal(NormalCommands::PrevLine)),
-            KeyCode::Char('k') => Some(Msg::Normal(NormalCommands::NextLine)),
-            KeyCode::Char('l') => Some(Msg::Normal(NormalCommands::NextChar)),
+            KeyCode::Char('h') => Some(NormalCommand::PrevChar),
+            KeyCode::Char('j') => Some(NormalCommand::PrevLine),
+            KeyCode::Char('k') => Some(NormalCommand::NextLine),
+            KeyCode::Char('l') => Some(NormalCommand::NextChar),
             _ => None,
         },
         KeyEventKind::Repeat => None,
@@ -108,14 +113,22 @@ fn handle_normal(key: KeyEvent) -> Option<Msg> {
     }
 }
 
-fn handle_travel(key: KeyEvent) -> Option<Msg> {
-    match key.kind {
-       _ => None,
-    }
-}
+fn handle_insert(model: &'static Model, key: KeyEvent) -> Option<InsertCommand> {
+    let ctrl = model.mod_keys.read().unwrap()
+        .iter()
+        .find(|&k| *k == ModifierKeyCode::LeftControl)
+        .is_some();
 
-fn handle_insert(key: KeyEvent) -> Option<Msg> {
     match key.kind {
+        KeyEventKind::Press => match key.code  {
+            KeyCode::Char(char) =>
+                Some(InsertCommand::Insert(Char { char, ..Default::default() })),
+            KeyCode::Backspace => Some(InsertCommand::Backspace),
+            KeyCode::Delete => Some(InsertCommand::Delete),
+            KeyCode::Enter if ctrl  => Some(InsertCommand::NewLineBefore),
+            KeyCode::Enter if !ctrl => Some(InsertCommand::NewLine),
+            _ => None,
+        }
        _ => None,
     }
 }

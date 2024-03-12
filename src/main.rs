@@ -13,7 +13,7 @@ use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
 use anyhow::Result;
-use input::{handle_keys, Msg};
+use input::{handle_keys, InsertCommand, Msg, NormalCommand};
 use ratatui::backend::Backend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -42,7 +42,7 @@ struct CLI {
 }
 
 struct Model {
-    state: ARW<AppState>,
+    state: ARW<State>,
     mod_keys: ARW<Vec<ModifierKeyCode>>,
     layout: ARW<Layout>,
 }
@@ -50,22 +50,65 @@ struct Model {
 struct Quit;
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
-enum AppState {
+enum State {
     #[default]
     Normal,
-    Travel,
     Insert,
     ShutDown,
 }
 
-fn update(zipper: Zipper, msg: Msg) -> Zipper {
+fn update(model: &'static Model, zipper: Zipper, msg: Msg) -> Zipper {
     match msg {
-        Msg::ToParent => zipper.go_back_to_parent().unwrap(),
-        Msg::ToFirstChild => zipper.move_to_child(0).unwrap(),
-        Msg::ToLeftSibling => zipper.move_left_or_cousin().unwrap(),
-        Msg::ToRightSibling => zipper.move_right_or_cousin().unwrap(),
+        Msg::Normal(nc) => update_normal(model, zipper, nc),
+        Msg::Insert(ic) => update_insert(model, zipper, ic),
+        // Msg::ToParent => zipper.go_back_to_parent().unwrap(),
+        // Msg::ToFirstChild => zipper.move_to_child(0).unwrap(),
+        // Msg::ToLeftSibling => zipper.move_left_or_cousin().unwrap(),
+        // Msg::ToRightSibling => zipper.move_right_or_cousin().unwrap(),
         _ => zipper,
     }
+}
+
+fn update_normal(model: &'static Model, mut zipper: Zipper, msg: NormalCommand) -> Zipper {
+    match msg {
+        NormalCommand::Quit => *model.state.write().unwrap() = State::ShutDown,
+        NormalCommand::NextChar => zipper = zipper.move_right_or_cousin().unwrap(),
+        NormalCommand::PrevChar => zipper = zipper.move_left_or_cousin().unwrap(),
+        NormalCommand::PrevLine => {
+            zipper = zipper
+                .go_back_to_parent().unwrap()
+                .go_back_to_parent().unwrap()
+                .move_left_catch_ignore()
+                .move_to_child(0).unwrap()
+                .move_to_child(0).unwrap();
+        },
+        NormalCommand::NextLine => {
+            zipper = zipper
+                .go_back_to_parent().unwrap()
+                .go_back_to_parent().unwrap()
+                .move_right_catch_ignore()
+                .move_to_child(0).unwrap()
+                .move_to_child(0).unwrap();
+        },
+        NormalCommand::InsertMode => *model.state.write().unwrap() = State::Insert,
+        NormalCommand::InsertModeAfterCursor => {
+            zipper = zipper.move_right_or_cousin().unwrap();
+            *model.state.write().unwrap() = State::Insert;
+        },
+    };
+    zipper
+}
+
+fn update_insert(_model: &'static Model, zipper: Zipper, msg: InsertCommand) -> Zipper {
+    match msg {
+        InsertCommand::Insert(_ch) => (),
+        InsertCommand::Replace(_ch) => (),
+        InsertCommand::Delete => (),
+        InsertCommand::Backspace => (),
+        InsertCommand::NewLine => (),
+        InsertCommand::NewLineBefore => (),
+    }
+    zipper
 }
 
 pub fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
@@ -78,11 +121,11 @@ fn control_loop(model: &'static Model, tick_rate: Duration, input_rx: Receiver<M
     let mut zipper = Zipper::new(Node::Layout(model.layout.clone()));
     let mut last_tick = Instant::now();
     loop {
-        if *model.state.read().unwrap() == AppState::ShutDown { break }
+        if *model.state.read().unwrap() == State::ShutDown { break }
 
         // handle input
         while let Ok(msg) = input_rx.try_recv() {
-            zipper = update(zipper, msg);
+            zipper = update(model, zipper, msg);
         }
 
         last_tick = timeout_sleep(tick_rate, last_tick);
@@ -98,7 +141,7 @@ fn main() -> Result<()> {
     // set up global model
     let model: &'static Model = Box::leak(Box::new(
         Model {
-            state: Arc::new(RwLock::new(AppState::Normal)),
+            state: Arc::new(RwLock::new(State::Normal)),
             mod_keys: Arc::new(RwLock::new(Vec::new())),
             layout: Arc::new(RwLock::new(Layout::new(LayoutType::Container {
                 split_direction: SplitDirection::Horizontal,
@@ -120,7 +163,7 @@ fn main() -> Result<()> {
     let mut last_tick = Instant::now();
 
     loop {
-        if *model.state.read().unwrap() == AppState::ShutDown { break }
+        if *model.state.read().unwrap() == State::ShutDown { break }
         
         terminal.draw(|frame| {
             let tree = model.layout.read().unwrap().clone();
