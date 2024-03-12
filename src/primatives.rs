@@ -13,7 +13,7 @@ pub trait TryMother<T> {
     fn try_add_child(&mut self, child: T, index: usize) -> Result<ARW<T>>;
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub struct Char {
     pub char: char,
     pub style: Style,
