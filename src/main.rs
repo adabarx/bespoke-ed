@@ -117,25 +117,6 @@ pub async fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
     Instant::now()
 }
 
-async fn control_loop(
-    model: &'static Model,
-    tick_rate: Duration,
-    mut input_rx: UnboundedReceiver<Msg>
-) {
-        let mut zipper = LayoutZipper::new(Node::Layout(model.layout.clone())).await;
-        let mut last_tick = Instant::now();
-        loop {
-            if *model.state.read().await == State::ShutDown { break }
-
-            // handle input
-            while let Ok(msg) = input_rx.try_recv() {
-                zipper = update(model, zipper, msg).await;
-            }
-
-            last_tick = timeout_sleep(tick_rate, last_tick).await;
-        }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tui::install_panic_hook();
@@ -178,7 +159,7 @@ async fn main() -> Result<()> {
             let timeout = (tick_rate / 4).saturating_sub(last_tick.elapsed());
             if crossterm::event::poll(timeout).unwrap() {
                 if let Some(msg) = handle_events(model, event::read().unwrap()).await {
-                    input_tx.send(msg);
+                    input_tx.send(msg).unwrap();
                 }
                 last_tick = Instant::now();
             }
@@ -222,7 +203,7 @@ async fn main() -> Result<()> {
         loop {
             if *model.state.read().await == State::ShutDown { break }
             
-            render_tx.send(model.layout.read().await.async_render().await);
+            render_tx.send(model.layout.read().await.async_render().await).unwrap();
 
             last_tick = timeout_sleep(tick_rate, last_tick).await;
         }
@@ -230,17 +211,14 @@ async fn main() -> Result<()> {
 
     //
     // render thread:
+    //     *  stays in main thread
     //     1. receives renders from build thread
     //     2. draws the render to the terminal
     //
 
-    let render_thread = tokio::spawn(async move {
-        while let Some(render) = render_rx.recv().await {
-            terminal.draw(|frame| frame.render_widget_ref(render, frame.size()));
-        }
-    });
-
-    tokio::join!(input_thread, control_thread, build_thread, render_thread);
+    while let Some(render) = render_rx.recv().await {
+        terminal.draw(|frame| frame.render_widget_ref(render, frame.size()))?;
+    }
 
     tui::teardown_app()
 }

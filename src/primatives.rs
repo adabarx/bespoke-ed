@@ -184,15 +184,19 @@ impl TryMother<Line> for Layout {
 impl AsyncWidget<SpanRender> for Span {
     async fn async_render(&self) -> SpanRender {
         let mut set = JoinSet::new();
-        for char in self.characters.iter().cloned() {
-            set.spawn(async move { char.read().await.clone() });
+        for (i, char) in self.characters.iter().cloned().enumerate() {
+            set.spawn(async move { (i, char.read().await.clone()) });
         }
         let mut characters = Vec::new();
         while let Some(Ok(char)) = set.join_next().await {
             characters.push(char);
         }
+        characters.sort_by(|a, b| a.0.cmp(&b.0));
 
-        SpanRender { characters, ..Default::default() }
+        SpanRender {
+            characters: characters.into_iter().map(|(_, render)| render).collect(),
+            ..Default::default()
+        }
     }
 }
 
@@ -200,15 +204,19 @@ impl AsyncWidget<SpanRender> for Span {
 impl AsyncWidget<LineRender> for Line {
     async fn async_render(&self) -> LineRender {
         let mut set = JoinSet::new();
-        for span in self.spans.iter().cloned() {
-            set.spawn(async move { span.read().await.async_render().await });
+        for (i, span) in self.spans.iter().cloned().enumerate() {
+            set.spawn(async move { (i, span.read().await.async_render().await) });
         }
         let mut spans = Vec::new();
         while let Some(Ok(span)) = set.join_next().await {
             spans.push(span);
         }
+        spans.sort_by(|a, b| a.0.cmp(&b.0));
 
-        LineRender { spans, ..Default::default() }
+        LineRender {
+            spans: spans.into_iter().map(|(_, render)| render).collect(),
+            ..Default::default()
+        }
     }
 }
 
@@ -216,15 +224,19 @@ impl AsyncWidget<LineRender> for Line {
 impl AsyncWidget<TextRender> for Text {
     async fn async_render(&self) -> TextRender {
         let mut set = JoinSet::new();
-        for line in self.lines.iter().cloned() {
-            set.spawn(async move { line.read().await.async_render().await });
+        for (i, line) in self.lines.iter().cloned().enumerate() {
+            set.spawn(async move { (i, line.read().await.async_render().await) });
         }
         let mut lines = Vec::new();
         while let Some(Ok(line)) = set.join_next().await {
             lines.push(line);
         }
+        lines.sort_by(|a, b| a.0.cmp(&b.0));
 
-        TextRender { lines, ..Default::default() }
+        TextRender { 
+            lines: lines.into_iter().map(|(_, render)| render).collect(),
+            ..Default::default()
+        }
     }
 }
 
@@ -237,17 +249,18 @@ impl AsyncWidget<LayoutRender> for Layout {
                 LayoutType::Content(content) => LayoutTypeRender::Content(content.async_render().await),
                 LayoutType::Container { split_direction, layouts } =>{
                     let mut set = JoinSet::new();
-                    for layout in layouts.iter().cloned() {
-                        set.spawn(async move { layout.read().await.async_render().await });
+                    for (i, layout) in layouts.iter().cloned().enumerate() {
+                        set.spawn(async move { (i, layout.read().await.async_render().await) });
                     }
                     let mut layouts = Vec::new();
                     while let Some(Ok(render)) = set.join_next().await {
                         layouts.push(render)
                     }
+                    layouts.sort_by(|a, b| a.0.cmp(&b.0));
 
                     LayoutTypeRender::Container {
                         split_direction: split_direction.clone(),
-                        layouts 
+                        layouts: layouts.into_iter().map(|(_, render)| render).collect(),
                     }  
                 },
             }
