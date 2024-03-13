@@ -61,7 +61,7 @@ pub enum Msg {
     ShutDown
 }
 
-async fn handle_events(model: &'static Model, input: Event) -> Option<Msg> {
+pub async fn handle_events(model: &'static Model, input: Event) -> Option<Msg> {
     match input {
         Event::Key(key) => match key.code {
             KeyCode::Esc => Some(Msg::NormalMode),

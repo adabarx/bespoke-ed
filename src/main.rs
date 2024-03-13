@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::time::{Instant, Duration};
 use std::fs;
 
-use tokio::sync::mpsc::{self, Receiver, UnboundedReceiver};
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::RwLock;
 use clap::Parser;
-use crossterm::event::ModifierKeyCode;
+use crossterm::event::{self, ModifierKeyCode};
 use anyhow::Result;
 use input::{InsertCommand, Msg, NormalCommand};
 
@@ -17,24 +17,27 @@ mod zipper;
 mod flipflop;
 mod input;
 
-use primatives::{Layout, LayoutType, SplitDirection, Text};
+use primatives::{Layout, LayoutRender, LayoutType, SplitDirection, Text, AsyncWidget};
 use tokio::time::sleep;
 use zipper::{LayoutZipper, Node};
+
+use crate::input::handle_events;
+
+const BILLY: u64 = 1_000_000_000;
+const FPS_LIMIT: u64 = 60;
+const RENDER_DEADLINE: u64 = BILLY / FPS_LIMIT;
+const CONTROL_DEADLINE: u64 = BILLY / (FPS_LIMIT * 2);
 
 type ARW<T> = Arc<RwLock<T>>;
 
 #[derive(Parser, Debug)]
-struct CLI {
-    path: Option<PathBuf>,
-}
+struct CLI { path: Option<PathBuf> }
 
 struct Model {
     state: ARW<State>,
     mod_keys: ARW<Vec<ModifierKeyCode>>,
     layout: ARW<Layout>,
 }
-
-struct Quit;
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
 enum State {
@@ -59,6 +62,7 @@ async fn update(
         _ => zipper,
     }
 }
+
 
 async fn update_normal(
     model: &'static Model,
@@ -113,19 +117,23 @@ pub async fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
     Instant::now()
 }
 
-async fn control_loop(model: &'static Model, tick_rate: Duration, mut input_rx: UnboundedReceiver<Msg>) {
-    let mut zipper = LayoutZipper::new(Node::Layout(model.layout.clone())).await;
-    let mut last_tick = Instant::now();
-    loop {
-        if *model.state.read().await == State::ShutDown { break }
+async fn control_loop(
+    model: &'static Model,
+    tick_rate: Duration,
+    mut input_rx: UnboundedReceiver<Msg>
+) {
+        let mut zipper = LayoutZipper::new(Node::Layout(model.layout.clone())).await;
+        let mut last_tick = Instant::now();
+        loop {
+            if *model.state.read().await == State::ShutDown { break }
 
-        // handle input
-        while let Ok(msg) = input_rx.try_recv() {
-            zipper = update(model, zipper, msg).await;
+            // handle input
+            while let Ok(msg) = input_rx.try_recv() {
+                zipper = update(model, zipper, msg).await;
+            }
+
+            last_tick = timeout_sleep(tick_rate, last_tick).await;
         }
-
-        last_tick = timeout_sleep(tick_rate, last_tick).await;
-    }
 }
 
 #[tokio::main]
@@ -149,24 +157,90 @@ async fn main() -> Result<()> {
         }
     ));
 
-    let tick_rate = Duration::from_nanos(16_666_666);
-
-    let (input_tx, input_rx) = mpsc::unbounded_channel::<Msg>();
-
-    tokio::spawn(async move { input::input_listener(model, input_tx, tick_rate) });
-    tokio::spawn(async move { control_loop(model, tick_rate, input_rx) });
-
     let mut terminal = tui::init_app()?;
-    let mut last_tick = Instant::now();
 
-    loop {
-        if *model.state.read().await == State::ShutDown { break }
-        
-        let tree = model.layout.read().await.clone();
-        terminal.draw(|frame| frame.render_widget_ref(tree, frame.size())).unwrap();
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Msg>();
+    let (render_tx, mut render_rx) = mpsc::unbounded_channel::<LayoutRender>();
 
-        last_tick = timeout_sleep(tick_rate, last_tick).await;
-    }
+    //
+    // input thread:
+    //     1. handles all input from the terminal
+    //     2. converts them into commands
+    //     3. sends the commands to the control thread
+    //
+
+    let input_thread = tokio::spawn(async move {
+        let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
+        let mut last_tick = Instant::now();
+        loop {
+            if *model.state.read().await == State::ShutDown { break }
+
+            let timeout = (tick_rate / 4).saturating_sub(last_tick.elapsed());
+            if crossterm::event::poll(timeout).unwrap() {
+                if let Some(msg) = handle_events(model, event::read().unwrap()).await {
+                    input_tx.send(msg);
+                }
+                last_tick = Instant::now();
+            }
+        };
+    });
+
+    //
+    // control thread:
+    //     1. receives commands from input thread
+    //     2. executes users commands through zippers
+    //     3. zippers modify the atomic tree
+    //
+
+    let control_thread = tokio::spawn(async move {
+        let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
+        let mut last_tick = Instant::now();
+
+        let mut zipper = LayoutZipper::new(Node::Layout(model.layout.clone())).await;
+        loop {
+            if *model.state.read().await == State::ShutDown { break }
+
+            // handle input
+            while let Ok(msg) = input_rx.try_recv() {
+                zipper = update(model, zipper, msg).await;
+            }
+
+            last_tick = timeout_sleep(tick_rate / 4, last_tick).await;
+        }
+    });
+
+    //
+    // build thread:
+    //     1. asynchronously traverses the atomic tree
+    //     2. builds a render of the current state of the atomic tree
+    //     3. sends the render to the render thread
+    //
+
+    let build_thread = tokio::spawn(async move {
+        let tick_rate = Duration::from_nanos(RENDER_DEADLINE);
+        let mut last_tick = Instant::now();
+        loop {
+            if *model.state.read().await == State::ShutDown { break }
+            
+            render_tx.send(model.layout.read().await.async_render().await);
+
+            last_tick = timeout_sleep(tick_rate, last_tick).await;
+        }
+    });
+
+    //
+    // render thread:
+    //     1. receives renders from build thread
+    //     2. draws the render to the terminal
+    //
+
+    let render_thread = tokio::spawn(async move {
+        while let Some(render) = render_rx.recv().await {
+            terminal.draw(|frame| frame.render_widget_ref(render, frame.size()));
+        }
+    });
+
+    tokio::join!(input_thread, control_thread, build_thread, render_thread);
 
     tui::teardown_app()
 }
