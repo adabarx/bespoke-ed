@@ -57,39 +57,39 @@ pub struct FlipFlopReadGuard<'a, T: Clone + Send + Sync>(RwLockReadGuard<'a, T>)
 
 pub struct FlipFlopWriteGuard<'a, T: Clone + Send + Sync>(Arc<FlipFlop<T>>, Option<RwLockWriteGuard<'a, T>>);
 
-impl<'a, T: Clone + Send + Sync> Drop for FlipFlopWriteGuard<'a, T> {
-    fn drop(&mut self) {
-        task::spawn(async move {
-            let rg = self.0.flag.read().await;
-            let flipflopflag = *rg;
-            drop(rg);
-
-            // drop the write guard to avoid deadlock
-            self.1 = None;
-
-            if flipflopflag == FlipFlopFlag::Flip {
-                // change flag, diverting new reads to the latest updated data
-                *self.0.flag.write().await = FlipFlopFlag::Flop;
-                // manually grab the first write lock to the old data
-                let mut write_flip = self.0.flip.write().await;
-                // get a read on the new data
-                let read_flop = self.0.read().await.0;
-                // update old data with new
-                *write_flip = read_flop.clone();
-                // drop guards
-                drop(write_flip);
-                drop(read_flop);
-            } else {
-                *self.0.flag.write().await = FlipFlopFlag::Flip;
-                let mut write_flop = self.0.flop.write().await;
-                let read_flip = self.0.read().await.0;
-                *write_flop = read_flip.clone();
-                drop(write_flop);
-                drop(read_flip);
-            }
-        });
-    }
-}
+// impl<'a, T: Clone + Send + Sync> Drop for FlipFlopWriteGuard<'a, T> {
+//     fn drop(&mut self) {
+//         task::spawn(async move {
+//             let rg = self.0.flag.read().await;
+//             let flipflopflag = *rg;
+//             drop(rg);
+//
+//             // drop the write guard to avoid deadlock
+//             self.1 = None;
+//
+//             if flipflopflag == FlipFlopFlag::Flip {
+//                 // change flag, diverting new reads to the latest updated data
+//                 *self.0.flag.write().await = FlipFlopFlag::Flop;
+//                 // manually grab the first write lock to the old data
+//                 let mut write_flip = self.0.flip.write().await;
+//                 // get a read on the new data
+//                 let read_flop = self.0.read().await.0;
+//                 // update old data with new
+//                 *write_flip = read_flop.clone();
+//                 // drop guards
+//                 drop(write_flip);
+//                 drop(read_flop);
+//             } else {
+//                 *self.0.flag.write().await = FlipFlopFlag::Flip;
+//                 let mut write_flop = self.0.flop.write().await;
+//                 let read_flip = self.0.read().await.0;
+//                 *write_flop = read_flip.clone();
+//                 drop(write_flop);
+//                 drop(read_flip);
+//             }
+//         });
+//     }
+// }
 
 
 impl<'a, T: Clone + Send + Sync>

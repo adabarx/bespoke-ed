@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::{Instant, Duration};
 use std::fs;
 
+use tokio::sync::mpsc::{self, Receiver, UnboundedReceiver};
 use tokio::sync::RwLock;
 use clap::Parser;
-use crossbeam_channel::{unbounded, Receiver};
 use crossterm::event::ModifierKeyCode;
 use anyhow::Result;
 use input::{InsertCommand, Msg, NormalCommand};
@@ -67,27 +67,27 @@ async fn update_normal(
 ) -> LayoutZipper {
     match msg {
         NormalCommand::Quit => *model.state.write().await = State::ShutDown,
-        NormalCommand::NextChar => zipper = zipper.move_right_or_cousin().unwrap(),
-        NormalCommand::PrevChar => zipper = zipper.move_left_or_cousin().unwrap(),
+        NormalCommand::NextChar => zipper = zipper.move_right_or_cousin().await.unwrap(),
+        NormalCommand::PrevChar => zipper = zipper.move_left_or_cousin().await.unwrap(),
         NormalCommand::PrevLine => {
             zipper = zipper
-                .go_back_to_parent().unwrap()
-                .go_back_to_parent().unwrap()
-                .move_left_catch_ignore()
-                .move_to_child(0).unwrap()
-                .move_to_child(0).unwrap();
+                .go_back_to_parent().await.unwrap()
+                .go_back_to_parent().await.unwrap()
+                .move_left_catch_ignore().await
+                .move_to_child(0).await.unwrap()
+                .move_to_child(0).await.unwrap();
         },
         NormalCommand::NextLine => {
             zipper = zipper
-                .go_back_to_parent().unwrap()
-                .go_back_to_parent().unwrap()
-                .move_right_catch_ignore()
-                .move_to_child(0).unwrap()
-                .move_to_child(0).unwrap();
+                .go_back_to_parent().await.unwrap()
+                .go_back_to_parent().await.unwrap()
+                .move_right_catch_ignore().await
+                .move_to_child(0).await.unwrap()
+                .move_to_child(0).await.unwrap();
         },
         NormalCommand::InsertMode => *model.state.write().await = State::Insert,
         NormalCommand::InsertModeAfterCursor => {
-            zipper = zipper.move_right_or_cousin().unwrap();
+            zipper = zipper.move_right_or_cousin().await.unwrap();
             *model.state.write().await = State::Insert;
         },
     };
@@ -113,8 +113,8 @@ pub async fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
     Instant::now()
 }
 
-async fn control_loop(model: &'static Model, tick_rate: Duration, input_rx: Receiver<Msg>) {
-    let mut zipper = LayoutZipper::new(Node::Layout(model.layout.clone()));
+async fn control_loop(model: &'static Model, tick_rate: Duration, mut input_rx: UnboundedReceiver<Msg>) {
+    let mut zipper = LayoutZipper::new(Node::Layout(model.layout.clone())).await;
     let mut last_tick = Instant::now();
     loop {
         if *model.state.read().await == State::ShutDown { break }
@@ -151,7 +151,7 @@ async fn main() -> Result<()> {
 
     let tick_rate = Duration::from_nanos(16_666_666);
 
-    let (input_tx, input_rx) = unbounded::<Msg>();
+    let (input_tx, input_rx) = mpsc::unbounded_channel::<Msg>();
 
     tokio::spawn(async move { input::input_listener(model, input_tx, tick_rate) });
     tokio::spawn(async move { control_loop(model, tick_rate, input_rx) });

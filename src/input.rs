@@ -1,24 +1,23 @@
-use std::{ops::ControlFlow, sync::{atomic::AtomicBool, Arc}, time::{Duration, Instant}};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
-use ratatui::style::Style;
+use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{primatives::Char, State, Model, Quit, ARW};
+use crate::{primatives::Char, State, Model};
 
-pub fn input_listener(
+pub async fn input_listener(
     model: &'static Model,
-    input_tx: Sender<Msg>,
+    input_tx: UnboundedSender<Msg>,
     tick_rate: Duration,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
     loop {
-        if *model.state.read().unwrap() == State::ShutDown { break }
+        if *model.state.read().await == State::ShutDown { break }
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)? {
-            if let Some(msg) = handle_events(model, event::read()?) {
+            if let Some(msg) = handle_events(model, event::read()?).await {
                 input_tx.send(msg)?;
             }
             last_tick = Instant::now();
@@ -62,23 +61,23 @@ pub enum Msg {
     ShutDown
 }
 
-fn handle_events(model: &'static Model, input: Event) -> Option<Msg> {
+async fn handle_events(model: &'static Model, input: Event) -> Option<Msg> {
     match input {
         Event::Key(key) => match key.code {
             KeyCode::Esc => Some(Msg::NormalMode),
-            _ => handle_keys(model, key),
+            _ => handle_keys(model, key).await,
         },
         _ => None,
     }
 }
 
-pub fn handle_keys(model: &'static Model, key: KeyEvent) -> Option<Msg> {
+pub async fn handle_keys(model: &'static Model, key: KeyEvent) -> Option<Msg> {
     match key.kind {
         KeyEventKind::Press => match key.code {
             KeyCode::Modifier(mod_key) =>
                 model.mod_keys
                     .write()
-                    .unwrap()
+                    .await
                     .push(mod_key),
             _ => (),
         }
@@ -86,20 +85,20 @@ pub fn handle_keys(model: &'static Model, key: KeyEvent) -> Option<Msg> {
             KeyCode::Modifier(mod_key) =>
                 model.mod_keys
                     .write()
-                    .unwrap()
+                    .await
                     .retain(|k| *k == mod_key),
             _ => (),
         }
         _ => ()
     }
-    match model.state.read().unwrap().clone() {
-        State::Normal => Some(Msg::Normal(handle_normal(model, key)?)),
-        State::Insert => Some(Msg::Insert(handle_insert(model, key)?)),
+    match model.state.read().await.clone() {
+        State::Normal => Some(Msg::Normal(handle_normal(model, key).await?)),
+        State::Insert => Some(Msg::Insert(handle_insert(model, key).await?)),
         State::ShutDown => Some(Msg::ShutDown),
     }
 }
 
-fn handle_normal(_model: &'static Model, key: KeyEvent) -> Option<NormalCommand> {
+async fn handle_normal(_model: &'static Model, key: KeyEvent) -> Option<NormalCommand> {
     match key.kind {
         KeyEventKind::Press => match key.code {
             KeyCode::Char('h') => Some(NormalCommand::PrevChar),
@@ -113,8 +112,8 @@ fn handle_normal(_model: &'static Model, key: KeyEvent) -> Option<NormalCommand>
     }
 }
 
-fn handle_insert(model: &'static Model, key: KeyEvent) -> Option<InsertCommand> {
-    let ctrl = model.mod_keys.read().unwrap()
+async fn handle_insert(model: &'static Model, key: KeyEvent) -> Option<InsertCommand> {
+    let ctrl = model.mod_keys.read().await
         .iter()
         .find(|&k| *k == ModifierKeyCode::LeftControl)
         .is_some();

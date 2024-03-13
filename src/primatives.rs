@@ -1,9 +1,9 @@
-use std::{cmp::min, sync::{Arc}, u16};
+use std::{cmp::min, sync::Arc, u16};
 
 use async_trait::async_trait;
 use tokio::{sync::RwLock, task::JoinSet};
 use anyhow::{bail, Result};
-use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::{Widget, WidgetRef}};
+use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::WidgetRef};
 
 use crate::ARW;
 
@@ -13,6 +13,11 @@ pub trait Mother<T> {
 
 pub trait TryMother<T> {
     fn try_add_child(&mut self, child: T, index: usize) -> Result<ARW<T>>;
+}
+
+#[async_trait]
+pub trait AsyncWidget {
+    async fn async_render(&self, area: Rect, buf: &mut Buffer);
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -175,8 +180,9 @@ impl TryMother<Line> for Layout {
     }
 }
 
-impl WidgetRef for Char {
-    fn render_ref(&self, area:Rect, buf: &mut Buffer) {
+#[async_trait]
+impl AsyncWidget for Char {
+    async fn async_render(&self, area:Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
         let mut render_char = self.char;
         if render_char == b'\n' as char {
@@ -187,8 +193,8 @@ impl WidgetRef for Char {
 }
 
 #[async_trait]
-impl WidgetRef for Span {
-    async fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+impl AsyncWidget for Span {
+    async fn async_render(&self, area: Rect, buf: &mut Buffer) {
         // height is already 1
         if self.characters.len() == 0 {
             let area = Rect { width: 1, ..area };
@@ -203,14 +209,15 @@ impl WidgetRef for Span {
                 width: 1,
                 ..area
             };
-            ch.read().await.render_ref(area, buf);
+            ch.read().await.async_render(area, buf);
             i += 1;
         }
     }
 }
 
-impl WidgetRef for Line {
-    fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+#[async_trait]
+impl AsyncWidget for Line {
+    async fn async_render(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
         let len = self.spans.len();
         if len == 0 {
@@ -221,41 +228,45 @@ impl WidgetRef for Line {
         buf.set_style(area, self.style);
         let mut offset: u16 = 0;
         for span in self.spans.iter() {
-            let span = span.read().unwrap();
+            let span = span.read().await;
             let area = Rect {
                 x: area.x + offset,
                 y: area.y,
                 width: span.characters.len() as u16,
                 height: 1,
             };
-            span.render_ref(area, buf);
+            span.async_render(area, buf).await;
             offset += span.characters.iter().count() as u16;
         }
     }
 }
 
-impl WidgetRef for Text {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+#[async_trait]
+impl AsyncWidget for Text {
+    async fn async_render(&self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
         let mut line_number: u16 = 0;
         for line in self.lines.iter() {
             let area = Rect {
                 x: area.x,
                 y: area.y + line_number,
-                width: line.read().unwrap().char_len(),
+                width: line
+                    .read().await
+                    .char_len().await,
                 height: 1,
             };
-            line.read().unwrap().render_ref(area, buf);
+            line.read().await.async_render(area, buf);
             line_number += 1;
         }
     }
 }
 
-impl WidgetRef for Layout {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+#[async_trait]
+impl AsyncWidget for Layout {
+    async fn async_render(&self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
         match self.layout {
-            LayoutType::Content(ref content) => content.render_ref(area, buf),
+            LayoutType::Content(ref content) => content.async_render(area, buf).await,
             LayoutType::Container { ref split_direction, ref layouts } => {
                 let windows: u16 = layouts.len().try_into().unwrap();
                 if windows == 0 { return (); }
@@ -270,11 +281,7 @@ impl WidgetRef for Layout {
                                 area.width,
                                 offset
                             );
-                            tokio::task::block_in_place(async move {
-                                tokio::task::spawn_blocking(async move {
-                                    layout.read().unwrap().render_ref(area, buf)
-                                });
-                            });
+                            layout.read().await.async_render(area, buf).await
                         }
                     },
                     SplitDirection::Vertical => {
@@ -287,7 +294,7 @@ impl WidgetRef for Layout {
                                 offset,
                                 area.height,
                             );
-                            layout.read().unwrap().render_ref(area, buf)
+                            layout.read().await.async_render(area, buf).await;
                         }
                     },
                 }
@@ -296,27 +303,9 @@ impl WidgetRef for Layout {
     }
 }
 
-impl Widget for Char {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        self.render_ref(area, buf);
-    }
-}
-
-impl Widget for Span {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        self.render_ref(area, buf);
-    }
-}
-
-impl Widget for Line {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        self.render_ref(area, buf);
-    }
-}
-
-impl Widget for Text {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        self.render_ref(area, buf);
+impl WidgetRef for Layout {
+    fn render_ref(&self, area:Rect, buf: &mut Buffer) {
+        self.async_render(area, buf);
     }
 }
 

@@ -2,29 +2,31 @@ use std::{cmp::min, collections::VecDeque};
 
 use ratatui::style::{Color, Style};
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 
-use crate::{primatives::{Char, Layout, LayoutType, Line, Span, TryMother}, ARW};
+use crate::{primatives::{Char, Layout, LayoutType, Line, Span, TryMother, Mother}, ARW};
 
+#[async_trait]
 trait Zipper {
-    fn prev(self) -> Option<LayoutZipper>;
+    async fn prev(self) -> Option<LayoutZipper>;
 
-    fn mother(self) -> MoveResult;
-    fn try_add_child(&mut self, child: Node, index: usize) -> Result<()>;
-    fn daughter(self, index: usize) -> MoveResult;
+    async fn mother(self) -> MoveResult;
+    async fn try_add_child(&mut self, child: Node, index: usize) -> Result<()>;
+    async fn daughter(self, index: usize) -> MoveResult;
 
-    fn left_sister(self) -> MoveResult;
-    fn right_sister(self) -> MoveResult;
+    async fn left_sister(self) -> MoveResult;
+    async fn right_sister(self) -> MoveResult;
 
-    fn left_aunt(self) -> MoveResult;
-    fn right_aunt(self) -> MoveResult;
+    async fn left_aunt(self) -> MoveResult;
+    async fn right_aunt(self) -> MoveResult;
 
-    fn left_cousin(self, index: usize) -> MoveResult;
-    fn right_cousin(self, index: usize) -> MoveResult;
+    async fn left_cousin(self, index: usize) -> MoveResult;
+    async fn right_cousin(self, index: usize) -> MoveResult;
 
-    fn left_sister_or_cousin(self) -> MoveResult;
-    fn right_sister_or_cousin(self) -> MoveResult;
+    async fn left_sister_or_cousin(self) -> MoveResult;
+    async fn right_sister_or_cousin(self) -> MoveResult;
 
-    fn replace_focus(self, new_node: Node) -> LayoutZipper;
+    async fn replace_focus(self, new_node: Node) -> LayoutZipper;
 }
 
 #[derive(Clone)]
@@ -103,13 +105,13 @@ impl Node {
         }
     }
 
-    pub fn get_children(&self) -> Option<Vec<Node>> {
+    pub async fn get_children(&self) -> Option<Vec<Node>> {
         // returns None if node doesn't carry children
         // returns an empty vec if the node can carry
         // children but currently doesn't
         match self {
             Node::Layout(layout) => {
-                let layout = layout.read().unwrap().layout.clone();
+                let layout = layout.read().await.layout.clone();
                 Some(match layout {
                     LayoutType::Content(text) => text.lines
                         .iter()
@@ -122,13 +124,13 @@ impl Node {
                 })
             },
             Node::Span(span) => Some(
-                span.read().unwrap().characters
+                span.read().await.characters
                     .iter()
                     .map(|ch| Node::Char(ch.clone()))
                     .collect()
             ),
             Node::Line(line) => Some(
-                line.read().unwrap().spans
+                line.read().await.spans
                     .iter()
                     .map(|sp| Node::Span(sp.clone()))
                     .collect()
@@ -137,33 +139,33 @@ impl Node {
         }
     }
 
-    pub fn highlight(&mut self) {
+    pub async fn highlight(&mut self) {
         match self {
             Node::Line(line) => {
-                line.write().unwrap().style.bg = Some(Color::White);
-                line.write().unwrap().style.fg = Some(Color::Black);
+                line.write().await.style.bg = Some(Color::White);
+                line.write().await.style.fg = Some(Color::Black);
             },
             Node::Span(span) => {
-                span.write().unwrap().style.bg = Some(Color::White);
-                span.write().unwrap().style.fg = Some(Color::Black);
+                span.write().await.style.bg = Some(Color::White);
+                span.write().await.style.fg = Some(Color::Black);
             },
             Node::Char(ch) => {
-                ch.write().unwrap().style.bg = Some(Color::White);
-                ch.write().unwrap().style.fg = Some(Color::Black);
+                ch.write().await.style.bg = Some(Color::White);
+                ch.write().await.style.fg = Some(Color::Black);
             },
             Node::Layout(layout) => {
-                layout.write().unwrap().style.bg = Some(Color::White);
-                layout.write().unwrap().style.fg = Some(Color::Black);
+                layout.write().await.style.bg = Some(Color::White);
+                layout.write().await.style.fg = Some(Color::Black);
             },
         }
     }
 
-    pub fn no_highlight(&mut self) {
+    pub async fn no_highlight(&mut self) {
         match self {
-            Node::Line(line) => line.write().unwrap().style = Style::default(),
-            Node::Span(span) => span.write().unwrap().style = Style::default(),
-            Node::Char(char) => char.write().unwrap().style = Style::default(),
-            Node::Layout(layout) => layout.write().unwrap().style = Style::default(),
+            Node::Line(line) => line.write().await.style = Style::default(),
+            Node::Span(span) => span.write().await.style = Style::default(),
+            Node::Char(char) => char.write().await.style = Style::default(),
+            Node::Layout(layout) => layout.write().await.style = Style::default(),
         }
     }
 }
@@ -182,8 +184,8 @@ pub struct LayoutZipper {
 }
 
 impl LayoutZipper {
-    pub fn new(root: Node) -> Self {
-        let children = root.get_children().unwrap();
+    pub async fn new(root: Node) -> Self {
+        let children = root.get_children().await.unwrap();
         Self {
             focus: root,
             children,
@@ -193,8 +195,8 @@ impl LayoutZipper {
         }
     }
 
-    pub fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
-        self.focus.try_add_child(child.clone(), index).unwrap();
+    pub async fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
+        self.focus.try_add_child(child.clone(), index).await.unwrap();
 
         let len = self.children.len();
         let mut children: Vec<Node> = self.children.drain(min(index, len)..len).collect();
@@ -203,64 +205,64 @@ impl LayoutZipper {
         Ok(())
     }
 
-    pub fn move_to_child(mut self, index: usize) -> MoveResult {
+    pub async fn move_to_child(mut self, index: usize) -> MoveResult {
         self.focus.no_highlight();
-        let mut result = self.daughter(index);
+        let mut result = self.daughter(index).await;
         result.inner_mut().focus.highlight();
         result
     }
 
-    pub fn move_to_prev(mut self) -> Option<LayoutZipper> {
+    pub async fn move_to_prev(mut self) -> Option<LayoutZipper> {
         self.focus.no_highlight();
-        let mut rv = self.prev().unwrap();
+        let mut rv = self.prev().await.unwrap();
         rv.focus.highlight();
         Some(rv)
     }
 
-    pub fn try_move_right(mut self) -> MoveResult {
+    pub async fn try_move_right(mut self) -> MoveResult {
         self.focus.no_highlight();
-        let mut result = self.right_sister();
+        let mut result = self.right_sister().await;
         result.inner_mut().focus.highlight();
         result
     }
 
-    pub fn try_move_left(mut self) -> MoveResult {
+    pub async fn try_move_left(mut self) -> MoveResult {
         self.focus.no_highlight();
-        let mut result = self.left_sister();
+        let mut result = self.left_sister().await;
         result.inner_mut().focus.highlight();
         result
     }
 
-    pub fn move_left_catch_ignore(self) -> LayoutZipper {
-        self.try_move_right().unwrap()
+    pub async fn move_left_catch_ignore(self) -> LayoutZipper {
+        self.try_move_right().await.unwrap()
     }
 
-    pub fn move_right_catch_ignore(self) -> LayoutZipper {
-        self.try_move_right().unwrap()
+    pub async fn move_right_catch_ignore(self) -> LayoutZipper {
+        self.try_move_right().await.unwrap()
     }
 
-    pub fn go_back_to_parent(mut self) -> MoveResult {
+    pub async fn go_back_to_parent(mut self) -> MoveResult {
         self.focus.no_highlight();
-        let mut result = self.mother();
+        let mut result = self.mother().await;
         result.inner_mut().focus.highlight();
         result
     }
 
-    pub fn move_right_or_cousin(mut self) -> MoveResult {
+    pub async fn move_right_or_cousin(mut self) -> MoveResult {
         self.focus.no_highlight();
-        let mut result = self.right_sister_or_cousin();
+        let mut result = self.right_sister_or_cousin().await;
         result.inner_mut().focus.highlight();
         result
     }
 
-    pub fn move_left_or_cousin(mut self) -> MoveResult {
+    pub async fn move_left_or_cousin(mut self) -> MoveResult {
         self.focus.no_highlight();
-        let mut result = self.left_sister_or_cousin();
+        let mut result = self.left_sister_or_cousin().await;
         result.inner_mut().focus.highlight();
         result
     }
 
-    pub fn add_child(mut self, node: Node, index: usize) -> LayoutZipper {
+    pub async fn add_child(mut self, node: Node, index: usize) -> LayoutZipper {
         let len = self.children.len();
         if index >= len {
             self.children.push(node);
@@ -277,92 +279,94 @@ impl LayoutZipper {
         self
     }
 
-    pub fn replace_focus(mut self, new_node: Node) -> LayoutZipper {
-        self.children = new_node.get_children().unwrap_or(Vec::new());
+    pub async fn replace_focus(mut self, new_node: Node) -> LayoutZipper {
+        self.children = new_node.get_children().await.unwrap_or(Vec::new());
         self.focus = new_node;
         self
     }
 }
 
+#[async_trait]
 impl Zipper for MoveResult {
-    fn mother(self) -> MoveResult {
+    async fn mother(self) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().mother()
+        self.unwrap().mother().await
     }
 
-    fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
-        self.unwrap().try_add_child(child, index)
+    async fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
+        self.inner_mut().try_add_child(child, index).await
     }
 
-    fn replace_focus(self, new_node: Node) -> LayoutZipper {
+    async fn replace_focus(self, new_node: Node) -> LayoutZipper {
         if let MoveResult::DidntMove(_) = self { return self.unwrap() }
-        self.unwrap().replace_focus(new_node)
+        self.unwrap().replace_focus(new_node).await
     }    
 
-    fn right_aunt(self) -> MoveResult {
+    async fn right_aunt(self) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().right_aunt()
+        self.unwrap().right_aunt().await
     }
 
-    fn left_aunt(self) -> MoveResult {
+    async fn left_aunt(self) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().left_aunt()
+        self.unwrap().left_aunt().await
     }
 
-    fn right_cousin(self, index: usize) -> MoveResult {
+    async fn right_cousin(self, index: usize) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().right_cousin(index)
+        self.unwrap().right_cousin(index).await
     }
 
-    fn left_cousin(self, index: usize) -> MoveResult {
+    async fn left_cousin(self, index: usize) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().left_cousin(index)
+        self.unwrap().left_cousin(index).await
     }
 
-    fn daughter(self, index: usize) -> MoveResult {
+    async fn daughter(self, index: usize) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().daughter(index)
+        self.unwrap().daughter(index).await
     }
 
-    fn left_sister(self) -> MoveResult {
+    async fn left_sister(self) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().left_sister()
+        self.unwrap().left_sister().await
     }
 
-    fn right_sister(self) -> MoveResult {
+    async fn right_sister(self) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().right_sister()
+        self.unwrap().right_sister().await
     }
 
-    fn left_sister_or_cousin(self) -> MoveResult {
+    async fn left_sister_or_cousin(self) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().left_sister_or_cousin()
+        self.unwrap().left_sister_or_cousin().await
     }
 
-    fn right_sister_or_cousin(self) -> MoveResult {
+    async fn right_sister_or_cousin(self) -> MoveResult {
         if let MoveResult::DidntMove(_) = self { return self }
-        self.unwrap().right_sister_or_cousin()
+        self.unwrap().right_sister_or_cousin().await
     }
 
-    fn prev(self) -> Option<LayoutZipper> {
+    async fn prev(self) -> Option<LayoutZipper> {
         if let MoveResult::DidntMove(_) = self { return None }
-        self.unwrap().prev()
+        self.unwrap().prev().await
     }
 
 }
 
+#[async_trait]
 impl Zipper for LayoutZipper {
-    fn mother(self) -> MoveResult {
+    async fn mother(self) -> MoveResult {
         if self.previous.is_none() { return MoveResult::DidntMove(self) }
         let prev = self.previous.unwrap();
         match prev.direction {
             PrevDir::Parent => MoveResult::Moved(*prev.zipper),
-            PrevDir::Left => prev.zipper.mother(),
-            PrevDir::Right => prev.zipper.mother(),
+            PrevDir::Left => prev.zipper.mother().await,
+            PrevDir::Right => prev.zipper.mother().await,
         }
     }
 
-    fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
+    async fn try_add_child(&mut self, child: Node, index: usize) -> Result<()> {
         let children = &mut self.children;
         let tail = &mut children.drain(index..).collect();
         children.push(child);
@@ -370,59 +374,59 @@ impl Zipper for LayoutZipper {
         Ok(())
     }
 
-    fn right_aunt(self) -> MoveResult {
+    async fn right_aunt(self) -> MoveResult {
         let og = self.clone();
-        let result = self.mother();
+        let result = self.mother().await;
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
-        let result = result.unwrap().right_sister();
+        let result = result.right_sister().await;
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
         result
     }
 
-    fn left_aunt(self) -> MoveResult {
+    async fn left_aunt(self) -> MoveResult {
         let og = self.clone();
-        let result = self.mother();
+        let result = self.mother().await;
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
-        let result = result.unwrap().left_sister();
+        let result = result.unwrap().left_sister().await;
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
         result
     }
 
-    fn right_cousin(self, index: usize) -> MoveResult {
+    async fn right_cousin(self, index: usize) -> MoveResult {
         let og = self.clone();
-        let result = self.right_aunt();
+        let result = self.right_aunt().await;
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
-        let result = result.unwrap().daughter(index);
+        let result = result.unwrap().daughter(index).await;
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
         result
     }
 
-    fn left_cousin(self, index: usize) -> MoveResult {
+    async fn left_cousin(self, index: usize) -> MoveResult {
         let og = self.clone();
-        let result = self.left_aunt();
+        let result = self.left_aunt().await;
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
-        let result = result.unwrap().daughter(index);
+        let result = result.unwrap().daughter(index).await;
         if let MoveResult::DidntMove(_) = result {
             return MoveResult::DidntMove(og);
         }
         result
     }
 
-    fn daughter(self, mut index: usize) -> MoveResult {
+    async fn daughter(self, mut index: usize) -> MoveResult {
         let len = self.children.len();
         if len == 0 { return MoveResult::DidntMove(self) }
         if index >= len { 
@@ -438,16 +442,16 @@ impl Zipper for LayoutZipper {
             .cloned()
             .collect();
         let focus = self.children[index].clone();
-        let children = focus.get_children().unwrap_or(Vec::new());
+        let children = focus.get_children().await.unwrap_or(Vec::new());
         let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Parent });
         
         MoveResult::Moved(LayoutZipper { previous, focus, children, left, right })
     }
 
-    fn left_sister(self) -> MoveResult {
+    async fn left_sister(self) -> MoveResult {
         if let Some(prev) = self.previous.as_ref() {
             if prev.direction == PrevDir::Left {
-                return MoveResult::Moved(self.move_to_prev().unwrap());
+                return MoveResult::Moved(self.move_to_prev().await.unwrap());
             }
         }
 
@@ -457,16 +461,16 @@ impl Zipper for LayoutZipper {
 
         let mut right = self.right.clone();
         right.push_front(self.focus.clone());
-        let children = focus.get_children().unwrap_or(Vec::new());
+        let children = focus.get_children().await.unwrap_or(Vec::new());
         let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Right });
 
         MoveResult::Moved(LayoutZipper { focus, previous, children, left, right })
     }
 
-    fn right_sister(self) -> MoveResult {
+    async fn right_sister(self) -> MoveResult {
         if let Some(prev) = self.previous.as_ref() {
             if prev.direction == PrevDir::Right {
-                return MoveResult::Moved(self.move_to_prev().unwrap());
+                return MoveResult::Moved(self.move_to_prev().await.unwrap());
             }
         }
 
@@ -476,37 +480,37 @@ impl Zipper for LayoutZipper {
 
         let mut left = self.left.clone();
         left.push(self.focus.clone());
-        let children = focus.get_children().unwrap_or(Vec::new());
+        let children = focus.get_children().await.unwrap_or(Vec::new());
         let previous = Some(Breadcrumb { zipper: Box::new(self), direction: PrevDir::Left });
 
         MoveResult::Moved(LayoutZipper { focus, previous, children, left, right })
     }
 
-    fn left_sister_or_cousin(self) -> MoveResult {
+    async fn left_sister_or_cousin(self) -> MoveResult {
         let og = self.clone();
-        let sister = self.left_sister();
+        let sister = self.left_sister().await;
         if let MoveResult::Moved(_) = sister {
             return sister;
         }
-        og.left_cousin(usize::MAX)
+        og.left_cousin(usize::MAX).await
     }
 
-    fn right_sister_or_cousin(self) -> MoveResult {
+    async fn right_sister_or_cousin(self) -> MoveResult {
         let og = self.clone();
-        let sister = self.right_sister();
+        let sister = self.right_sister().await;
         if let MoveResult::Moved(_) = sister {
             return sister;
         }
-        og.right_cousin(0)
+        og.right_cousin(0).await
     }
 
-    fn prev(self) -> Option<LayoutZipper> {
+    async fn prev(self) -> Option<LayoutZipper> {
         if self.previous.is_none() { return None }
         Some(*self.previous.unwrap().zipper)
     }
 
-    fn replace_focus(mut self, new_node: Node) -> LayoutZipper {
-        self.children = new_node.get_children().unwrap_or(Vec::new()).clone();
+    async fn replace_focus(mut self, new_node: Node) -> LayoutZipper {
+        self.children = new_node.get_children().await.unwrap_or(Vec::new()).clone();
         self.focus = new_node.clone();
         self
     }
