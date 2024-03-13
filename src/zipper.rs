@@ -1,9 +1,9 @@
-use std::{cell::RefCell, cmp::min, collections::VecDeque, rc::Rc};
+use std::{cmp::min, collections::VecDeque};
 
 use ratatui::style::{Color, Style};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 
-use crate::{primatives::{Char, Layout, LayoutType, Line, Mother, Span, TryMother}, ARW};
+use crate::{primatives::{Char, Layout, LayoutType, Line, Span, TryMother}, ARW};
 
 trait Zipper {
     fn prev(self) -> Option<LayoutZipper>;
@@ -84,20 +84,20 @@ impl Node {
         }
     }
 
-    fn try_add_child(&mut self, child: Node, index: usize) -> Result<Node> {
+    async fn try_add_child(&mut self, child: Node, index: usize) -> Result<Node> {
         use Node::*;
         match (self, child) {
             (Layout(mom), Layout(child)) => Ok(Node::Layout(
-                mom.write().unwrap().try_add_child(child.read().unwrap().clone(), index)?
+                (*mom.write().await).try_add_child(child.read().await.clone(), index)?
             )),
             (Layout(mom), Line(child)) => Ok(Node::Line(
-                mom.write().unwrap().try_add_child(child.read().unwrap().clone(), index)?
+                (*mom.write().await).try_add_child(child.read().await.clone(), index)?
             )),
             (Line(mom), Span(child)) => Ok(Node::Span(
-                mom.write().unwrap().add_child(child.read().unwrap().clone(), index)
+                (*mom.write().await).add_child(child.read().await.clone(), index)
             )),
             (Span(mom), Char(child)) => Ok(Node::Char(
-                mom.write().unwrap().add_child(child.read().unwrap().clone(), index)
+                (*mom.write().await).add_child(child.read().await.clone(), index)
             )),
             _ => Err(anyhow!("this child does not please mother")),
         }

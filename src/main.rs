@@ -1,29 +1,15 @@
-#![allow(dead_code, unused_imports)]
-use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{self, Receiver as ViewReciever};
 use std::fmt::Debug;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use std::time::{Instant, Duration};
-use std::{default, fs, thread, usize};
+use std::fs;
 
+use tokio::sync::RwLock;
 use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
+use crossterm::event::ModifierKeyCode;
 use anyhow::Result;
-use input::{handle_keys, InsertCommand, Msg, NormalCommand};
-use ratatui::backend::Backend;
-use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListDirection, Widget};
-use ratatui::Terminal;
-use ratatui::{
-    widgets::WidgetRef,
-    Frame
-};
+use input::{InsertCommand, Msg, NormalCommand};
 
 mod tui;
 mod primatives;
@@ -31,7 +17,8 @@ mod zipper;
 mod flipflop;
 mod input;
 
-use primatives::{Layout, LayoutType, Line, Span, SplitDirection, Text};
+use primatives::{Layout, LayoutType, SplitDirection, Text};
+use tokio::time::sleep;
 use zipper::{LayoutZipper, Node};
 
 type ARW<T> = Arc<RwLock<T>>;
@@ -57,14 +44,14 @@ enum State {
     ShutDown,
 }
 
-fn update(
+async fn update(
     model: &'static Model,
     zipper: LayoutZipper,
     msg: Msg
 ) -> LayoutZipper {
     match msg {
-        Msg::Normal(nc) => update_normal(model, zipper, nc),
-        Msg::Insert(ic) => update_insert(model, zipper, ic),
+        Msg::Normal(nc) => update_normal(model, zipper, nc).await,
+        Msg::Insert(ic) => update_insert(model, zipper, ic).await,
         // Msg::ToParent => zipper.go_back_to_parent().unwrap(),
         // Msg::ToFirstChild => zipper.move_to_child(0).unwrap(),
         // Msg::ToLeftSibling => zipper.move_left_or_cousin().unwrap(),
@@ -73,13 +60,13 @@ fn update(
     }
 }
 
-fn update_normal(
+async fn update_normal(
     model: &'static Model,
     mut zipper: LayoutZipper,
     msg: NormalCommand
 ) -> LayoutZipper {
     match msg {
-        NormalCommand::Quit => *model.state.write().unwrap() = State::ShutDown,
+        NormalCommand::Quit => *model.state.write().await = State::ShutDown,
         NormalCommand::NextChar => zipper = zipper.move_right_or_cousin().unwrap(),
         NormalCommand::PrevChar => zipper = zipper.move_left_or_cousin().unwrap(),
         NormalCommand::PrevLine => {
@@ -98,16 +85,16 @@ fn update_normal(
                 .move_to_child(0).unwrap()
                 .move_to_child(0).unwrap();
         },
-        NormalCommand::InsertMode => *model.state.write().unwrap() = State::Insert,
+        NormalCommand::InsertMode => *model.state.write().await = State::Insert,
         NormalCommand::InsertModeAfterCursor => {
             zipper = zipper.move_right_or_cousin().unwrap();
-            *model.state.write().unwrap() = State::Insert;
+            *model.state.write().await = State::Insert;
         },
     };
     zipper
 }
 
-fn update_insert(model: &'static Model, zipper: LayoutZipper, msg: InsertCommand) -> LayoutZipper {
+async fn update_insert(model: &'static Model, zipper: LayoutZipper, msg: InsertCommand) -> LayoutZipper {
     match msg {
         InsertCommand::Insert(_ch) => (),
         InsertCommand::Replace(_ch) => (),
@@ -115,33 +102,34 @@ fn update_insert(model: &'static Model, zipper: LayoutZipper, msg: InsertCommand
         InsertCommand::Backspace => (),
         InsertCommand::NewLine => (),
         InsertCommand::NewLineBefore => (),
-        InsertCommand::Normal => *model.state.write().unwrap() = State::Normal,
+        InsertCommand::Normal => *model.state.write().await = State::Normal,
     }
     zipper
 }
 
-pub fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
+pub async fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
     let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-    if !timeout.is_zero() { thread::sleep(timeout); }
+    if !timeout.is_zero() { sleep(timeout).await; }
     Instant::now()
 }
 
-fn control_loop(model: &'static Model, tick_rate: Duration, input_rx: Receiver<Msg>) {
+async fn control_loop(model: &'static Model, tick_rate: Duration, input_rx: Receiver<Msg>) {
     let mut zipper = LayoutZipper::new(Node::Layout(model.layout.clone()));
     let mut last_tick = Instant::now();
     loop {
-        if *model.state.read().unwrap() == State::ShutDown { break }
+        if *model.state.read().await == State::ShutDown { break }
 
         // handle input
         while let Ok(msg) = input_rx.try_recv() {
-            zipper = update(model, zipper, msg);
+            zipper = update(model, zipper, msg).await;
         }
 
-        last_tick = timeout_sleep(tick_rate, last_tick);
+        last_tick = timeout_sleep(tick_rate, last_tick).await;
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tui::install_panic_hook();
 
     let path = CLI::parse().path.expect("File Required");
@@ -165,21 +153,19 @@ fn main() -> Result<()> {
 
     let (input_tx, input_rx) = unbounded::<Msg>();
 
-    thread::spawn(move || input::input_listener(model, input_tx, tick_rate));
-    thread::spawn(move || control_loop(model, tick_rate, input_rx));
+    tokio::spawn(async move { input::input_listener(model, input_tx, tick_rate) });
+    tokio::spawn(async move { control_loop(model, tick_rate, input_rx) });
 
     let mut terminal = tui::init_app()?;
     let mut last_tick = Instant::now();
 
     loop {
-        if *model.state.read().unwrap() == State::ShutDown { break }
+        if *model.state.read().await == State::ShutDown { break }
         
-        terminal.draw(|frame| {
-            let tree = model.layout.read().unwrap().clone();
-            frame.render_widget_ref(tree, frame.size());
-        }).unwrap();
+        let tree = model.layout.read().await.clone();
+        terminal.draw(|frame| frame.render_widget_ref(tree, frame.size())).unwrap();
 
-        last_tick = timeout_sleep(tick_rate, last_tick);
+        last_tick = timeout_sleep(tick_rate, last_tick).await;
     }
 
     tui::teardown_app()

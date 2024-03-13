@@ -1,5 +1,7 @@
-use std::{cell::{Ref, RefCell}, cmp::min, fs, path::PathBuf, rc::Rc, str::Chars, sync::{Arc, RwLock}, u16};
+use std::{cmp::min, sync::{Arc}, u16};
 
+use async_trait::async_trait;
+use tokio::{sync::RwLock, task::JoinSet};
 use anyhow::{bail, Result};
 use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::{Widget, WidgetRef}};
 
@@ -82,9 +84,9 @@ impl Span {
         }
     }
 
-    pub fn is_newline(&self) -> bool {
+    pub async fn is_newline(&self) -> bool {
         if self.characters.len() == 1
-            && self.characters[0].read().unwrap().char == b'\n' as char
+            && self.characters[0].read().await.char == b'\n' as char
         {
             return true;
         }
@@ -149,11 +151,18 @@ impl Line {
         self.spans = spans;
     }
 
-    pub fn char_len(&self) -> u16 {
-        self.spans
-            .iter()
-            .map(|sp| sp.read().unwrap().characters.len() as u16)
-            .sum()
+    pub async fn char_len(&self) -> u16 {
+        let mut set = JoinSet::new();
+
+        for sp in self.spans.iter().cloned() {
+            set.spawn(async move { sp.read().await.characters.len() });
+        }
+
+        let mut count = 0;
+        while let Some(Ok(len)) = set.join_next().await {
+            count += len;
+        }
+        count as u16
     }
 }
 
@@ -177,8 +186,9 @@ impl WidgetRef for Char {
     }
 }
 
+#[async_trait]
 impl WidgetRef for Span {
-    fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+    async fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
         if self.characters.len() == 0 {
             let area = Rect { width: 1, ..area };
@@ -193,7 +203,7 @@ impl WidgetRef for Span {
                 width: 1,
                 ..area
             };
-            ch.read().unwrap().render_ref(area, buf);
+            ch.read().await.render_ref(area, buf);
             i += 1;
         }
     }
@@ -260,7 +270,11 @@ impl WidgetRef for Layout {
                                 area.width,
                                 offset
                             );
-                            layout.read().unwrap().render_ref(area, buf)
+                            tokio::task::block_in_place(async move {
+                                tokio::task::spawn_blocking(async move {
+                                    layout.read().unwrap().render_ref(area, buf)
+                                });
+                            });
                         }
                     },
                     SplitDirection::Vertical => {

@@ -1,5 +1,4 @@
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind}, 
     terminal::{
         disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
         LeaveAlternateScreen,
@@ -8,9 +7,8 @@ use crossterm::{
 use ratatui::{
     backend::Backend, prelude::{CrosstermBackend, Terminal},
 };
-use std::{io::stdout, panic, time::{Duration, Instant}};
+use std::{io::stdout, panic};
 
-use crossbeam_channel::{Receiver, Sender};
 use anyhow::{Ok, Result};
 
 pub fn init_app() -> Result<Terminal<impl Backend>> {
