@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 use std::fmt::Debug;
-use std::sync::{RwLock, Arc};
+use std::sync::Arc;
 use std::time::{Instant, Duration};
-use std::{fs, thread};
+use std::fs;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use clap::Parser;
 use crossterm::event::{self, ModifierKeyCode};
 use anyhow::Result;
-use input::{InsertCommand, Msg, NormalCommand};
+use input::Msg;
 
 mod tui;
 mod primatives;
@@ -16,20 +16,33 @@ mod zipper;
 mod flipflop;
 mod input;
 
-use primatives::{Layout, LayoutRender, LayoutType, SplitDirection, Text, AsyncWidget};
+use primatives::{AsyncWidget, Layout, LayoutRender, LayoutType, LayoutTypeRender, ParentWidget, SplitDirection, Text};
 use tokio::time::sleep;
-use zipper::Zipper;
+use zipper::RootZipper;
 
 use crate::input::handle_events;
 
-const BILLY: u64 = 1_000_000_000;
+const BILLIE: u64 = 1_000_000_000;
 const FPS_LIMIT: u64 = 60;
-const RENDER_DEADLINE: u64 = BILLY / FPS_LIMIT;
-const CONTROL_DEADLINE: u64 = BILLY / (FPS_LIMIT * 2);
+const RENDER_DEADLINE: u64 = BILLIE / FPS_LIMIT;
+const CONTROL_DEADLINE: u64 = BILLIE / (FPS_LIMIT * 2);
 
-type InputRW<T> = Arc<RwLock<T>>;
-type TokioRW<T> = Arc<tokio::sync::RwLock<T>>;
+type ARW<T> = Arc<RwLock<T>>;
 
+impl AsyncWidget for &'static RwLock<Layout> {
+    async fn async_render(&self) -> LayoutRender {
+        let layout = self.read().await;
+        LayoutRender {
+            style: layout.style.clone(),
+            layout: match layout.layout {
+                LayoutType::Container { split_direction, layouts } => 
+                    LayoutTypeRender::Container { split_direction, layouts },
+                LayoutType::Content(text) =>
+                    LayoutTypeRender::Content(text.async_render.await),
+            }
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 struct CLI { path: Option<PathBuf> }
@@ -41,71 +54,6 @@ enum State {
     Insert,
     ShutDown,
 }
-
-async fn update(
-    state: &'static RwLock<State>,
-    zipper: impl Zipper<Layout>,
-    msg: Msg
-) -> impl Zipper<Layout> {
-    match msg {
-        Msg::Normal(nc) => update_normal(state, zipper, nc).await,
-        Msg::Insert(ic) => update_insert(state, zipper, ic).await,
-        _ => zipper,
-    }
-}
-
-
-async fn update_normal(
-    state: &'static RwLock<State>,
-    mut zipper: impl Zipper<Layout>,
-    msg: NormalCommand
-) -> OldZipper {
-    match msg {
-        NormalCommand::Quit => *state.write().await = State::ShutDown,
-        NormalCommand::NextChar => zipper = zipper.move_right_or_cousin().await.unwrap(),
-        NormalCommand::PrevChar => zipper = zipper.move_left_or_cousin().await.unwrap(),
-        NormalCommand::PrevLine => {
-            zipper = zipper
-                .go_back_to_parent().await.unwrap()
-                .go_back_to_parent().await.unwrap()
-                .move_left_catch_ignore().await
-                .move_to_child(0).await.unwrap()
-                .move_to_child(0).await.unwrap();
-        },
-        NormalCommand::NextLine => {
-            zipper = zipper
-                .go_back_to_parent().await.unwrap()
-                .go_back_to_parent().await.unwrap()
-                .move_right_catch_ignore().await
-                .move_to_child(0).await.unwrap()
-                .move_to_child(0).await.unwrap();
-        },
-        NormalCommand::InsertMode => *state.write().await = State::Insert,
-        NormalCommand::InsertModeAfterCursor => {
-            zipper = zipper.move_right_or_cousin().await.unwrap();
-            *state.write().await = State::Insert;
-        },
-    };
-    zipper
-}
-
-async fn update_insert(
-    state: &'static RwLock<State>,
-    zipper: OldZipper,
-    msg: InsertCommand
-) -> OldZipper {
-    match msg {
-        InsertCommand::Insert(_ch) => (),
-        InsertCommand::Replace(_ch) => (),
-        InsertCommand::Delete => (),
-        InsertCommand::Backspace => (),
-        InsertCommand::NewLine => (),
-        InsertCommand::NewLineBefore => (),
-        InsertCommand::Normal => *state.write().await = State::Normal,
-    }
-    zipper
-}
-
 pub async fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
     let timeout = tick_rate.saturating_sub(last_tick.elapsed());
     if !timeout.is_zero() { sleep(timeout).await; }
@@ -122,11 +70,11 @@ async fn main() -> Result<()> {
     // set up global model
     let state: &'static RwLock<State> = Box::leak(Box::new(RwLock::new(State::Normal)));
     let mod_keys: &'static RwLock<Vec<ModifierKeyCode>> = Box::leak(Box::new(RwLock::new(Vec::new())));
-    let root_layout: &'static tokio::sync::RwLock<Layout> = Box::leak(Box::new(
-        tokio::sync::RwLock::new(Layout::new(LayoutType::Container {
+    let root_layout: &'static RwLock<Layout> = Box::leak(Box::new(
+        RwLock::new(Layout::new(LayoutType::Container {
             split_direction: SplitDirection::Vertical,
             layouts: vec![
-                Arc::new(tokio::sync::RwLock::new(Layout::new(LayoutType::Content(Text::raw(content)))))
+                Arc::new(RwLock::new(Layout::new(LayoutType::Content(Text::raw(content)))))
             ]
         }))
     ));
@@ -143,15 +91,15 @@ async fn main() -> Result<()> {
     //     3. sends the commands to the control thread
     //
 
-    thread::spawn(move || -> Result<()> {
+    tokio::spawn(async move {
         let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
         let mut last_tick = Instant::now();
         loop {
-            if *state.read().unwrap() == State::ShutDown { break }
+            if *state.read().await == State::ShutDown { break }
 
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
             if crossterm::event::poll(timeout).unwrap() {
-                if let Some(msg) = handle_events(mod_keys, state, event::read()?) {
+                if let Some(msg) = handle_events(mod_keys, state, event::read().unwrap()) {
                     input_tx.send(msg).unwrap();
                 }
                 last_tick = Instant::now();
@@ -171,13 +119,13 @@ async fn main() -> Result<()> {
         let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
         let mut last_tick = Instant::now();
 
-        let mut zipper = OldZipper::new(Node::Layout(root_layout.clone())).await;
+        let mut zipper = RootZipper::new(root_layout.clone()).await;
         loop {
-            if *state.read().unwrap() == State::ShutDown { break }
+            if *state.read().await == State::ShutDown { break }
 
             // handle input
             while let Ok(msg) = input_rx.try_recv() {
-                zipper = update(state, zipper, msg).await;
+                // zipper = update(state, zipper, msg).await;
             }
 
             last_tick = timeout_sleep(tick_rate, last_tick).await;
@@ -195,7 +143,7 @@ async fn main() -> Result<()> {
         let tick_rate = Duration::from_nanos(RENDER_DEADLINE);
         let mut last_tick = Instant::now();
         loop {
-            if *state.read().unwrap() == State::ShutDown { break }
+            if *state.read().await == State::ShutDown { break }
             
             render_tx.send(root_layout.read().await.async_render().await).unwrap();
 

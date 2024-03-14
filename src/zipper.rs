@@ -1,10 +1,9 @@
 use async_trait::async_trait;
-use crate::{primatives::AsyncWidget, TokioRW};
-use tokio::sync::{RwLockWriteGuard, RwLockReadGuard};
+use crate::{primatives::{AsyncWidget, Layout}, ARW};
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use anyhow::Result;
 
 type DynZipper = Box<dyn Zipper<dyn AsyncWidget>>;
-type DynWidget = TokioRW<dyn AsyncWidget>;
 
 #[async_trait]
 pub trait Zipper<T: AsyncWidget> {
@@ -33,29 +32,45 @@ enum Move {
     Blocked(DynZipper)
 }
 
+impl Move {
+    pub fn unwrap(self) -> DynZipper {
+        match self {
+            Move::Passed(rv) => rv,
+            Move::Blocked(rv) => rv,
+        }
+    }
+}
+
 struct Breadcrumb {
     zipper: DynZipper,
     direction: PrevDir,
 }
 
-pub struct RootZipper<T: AsyncWidget> {
-    focus: TokioRW<T>,
-    children: Vec<DynWidget>
+pub struct RootZipper {
+    focus: &'static RwLock<Layout>,
+    children: Vec<ARW<Layout>>
+}
+
+impl RootZipper {
+    pub async fn new(focus: &'static RwLock<Layout>) -> Self {
+        let children = focus.read().await.get_children();
+        Self { focus, children }
+    }
 }
 
 pub struct LeafZipper<T: AsyncWidget> {
     previous: Breadcrumb,
-    focus: TokioRW<T>,
-    left: Vec<DynWidget>,
-    right: Vec<DynWidget>,
+    focus: ARW<T>,
+    left: Vec<ARW<dyn AsyncWidget>>,
+    right: Vec<ARW<dyn AsyncWidget>>,
 }
 
 pub struct BranchZipper<T: AsyncWidget> {
     previous: Breadcrumb,
-    focus: TokioRW<T>,
-    left: Vec<DynWidget>,
-    right: Vec<DynWidget>,
-    children: Vec<DynWidget>
+    focus: ARW<T>,
+    left: Vec<ARW<dyn AsyncWidget>>,
+    right: Vec<ARW<dyn AsyncWidget>>,
+    children: Vec<ARW<dyn AsyncWidget>>
 }
 
 impl<T: AsyncWidget> Zipper<T> for BranchZipper<T> {

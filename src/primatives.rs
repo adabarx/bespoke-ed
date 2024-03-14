@@ -2,24 +2,61 @@ use std::{cmp::min, sync::Arc, u16};
 
 use async_trait::async_trait;
 use tokio::{sync::RwLock, task::JoinSet};
-use anyhow::{bail, Result};
-use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::WidgetRef};
+use anyhow::Result;
+use ratatui::{prelude::{Rect, Alignment}, buffer::Buffer, style::Style, widgets::WidgetRef};
 
-use crate::TokioRW;
+use crate::ARW;
 
 pub trait Mother<T> {
-    fn add_child(&mut self, child: T, index: usize) -> TokioRW<T>;
+    fn add_child(&mut self, child: T, index: usize) -> ARW<T>;
 }
 
 pub trait TryMother<T> {
-    fn try_add_child(&mut self, child: T, index: usize) -> Result<TokioRW<T>>;
+    fn try_add_child(&mut self, child: T, index: usize) -> Result<ARW<T>>;
 }
 
 #[async_trait]
 pub trait AsyncWidget {
     async fn async_render(&self) -> impl WidgetRef;
-    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>>;
 }
+
+#[async_trait]
+pub trait ParentWidget<T: AsyncWidget + ?Sized> {
+    async fn get_children(&self) -> Vec<ARW<T>>;
+}
+
+trait WindowChild {}
+
+impl<T: WindowChild> WindowChild for Window<T> {}
+impl WindowChild for Text {}
+
+impl<T> ParentWidget<T> for Vec<ARW<T>>
+where
+    T: AsyncWidget + WindowChild + ?Sized
+{
+    async fn get_children(&self) -> Vec<ARW<T>> {
+        self.clone()
+    }
+}
+
+impl ParentWidget<Char> for Span {
+    async fn get_children(&self) -> Vec<ARW<Char>> {
+        self.characters.clone()
+    }
+}
+
+impl ParentWidget<Span> for Line {
+    async fn get_children(&self) -> Vec<ARW<Span>> {
+        self.spans.clone()
+    }
+}
+
+impl ParentWidget<Line> for Text {
+    async fn get_children(&self) -> Vec<ARW<Line>> {
+        self.lines.clone()
+    }
+}
+
 
 #[derive(Default, Clone, PartialEq, Eq)]
 pub struct Char {
@@ -29,52 +66,36 @@ pub struct Char {
 
 #[derive(Default, Clone)]
 pub struct Span {
-    pub characters: Vec<TokioRW<Char>>,
+    pub characters: Vec<ARW<Char>>,
     pub style: Style,
 }
 
 #[derive(Default, Clone)]
 pub struct Line {
-    pub spans: Vec<TokioRW<Span>>,
+    pub spans: Vec<ARW<Span>>,
     pub style: Style,
 }
 
 #[derive(Default, Clone)]
 pub struct Text {
-    pub lines: Vec<TokioRW<Line>>,
+    pub lines: Vec<ARW<Line>>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum SplitDirection {
     Vertical,
     Horizontal,
 }
 
+
 #[derive(Clone)]
-pub struct Layout {
+pub struct Window<T: WindowChild> {
     pub style: Style,
-    pub layout: LayoutType,
+    pub layout: Vec<ARW<T>>,
 }
 
-#[derive(Clone)]
-pub enum LayoutType {
-    Container {
-        split_direction: SplitDirection,
-        layouts: Vec<TokioRW<Layout>>,
-    },
-    Content(Text),
-}
-
-impl Layout {
-    pub fn new(layout: LayoutType) -> Self {
-        Self {
-            layout,
-            style: Style::default()
-        }
-    }
-}
 
 impl Span { 
     pub fn raw<T: Into<String>>(content: T) -> Span {
@@ -112,9 +133,9 @@ impl Text {
         }
     }
 
-    pub fn add_line(&mut self, line: TokioRW<Line>, index: usize) {
+    pub fn add_line(&mut self, line: ARW<Line>, index: usize) {
         let len = self.lines.len();
-        let mut lines: Vec<TokioRW<Line>> =
+        let mut lines: Vec<ARW<Line>> =
             self.lines
                 .drain(min(index, len)..len)
                 .collect();
@@ -125,7 +146,7 @@ impl Text {
         self.lines = lines;
     }
 
-    pub fn get_line(&self, index: usize) -> TokioRW<Line> {
+    pub fn get_line(&self, index: usize) -> ARW<Line> {
         self.lines.get(index)
             .unwrap_or(
                 self.lines.get(self.lines.len() - 1).unwrap()
@@ -144,9 +165,9 @@ impl Line {
             ..Default::default()
         }
     }
-    pub fn add_span(&mut self, span: TokioRW<Span>, index: usize) {
+    pub fn add_span(&mut self, span: ARW<Span>, index: usize) {
         let len = self.spans.len();
-        let mut spans: Vec<TokioRW<Span>> =
+        let mut spans: Vec<ARW<Span>> =
             self.spans
                 .drain(min(index, len)..len)
                 .collect();
@@ -172,12 +193,10 @@ impl Line {
     }
 }
 
-impl TryMother<Line> for Layout {
-    fn try_add_child(&mut self, child: Line, index: usize) -> Result<TokioRW<Line>> {
-        Ok(match self.layout {
-            LayoutType::Container { .. } => bail!("Can't add lines to a container"),
-            LayoutType::Content(ref mut text) => text.add_child(child, index),
-        })
+#[async_trait]
+impl AsyncWidget for Char {
+    async fn async_render(&self) -> Char {
+        self.clone()
     }
 }
 
@@ -200,10 +219,6 @@ impl AsyncWidget for Span {
             ..Default::default()
         }
     }
-
-    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>> {
-        Vec::new()
-    }
 }
 
 #[async_trait]
@@ -224,10 +239,6 @@ impl AsyncWidget for Line {
             style: self.style,
             ..Default::default()
         }
-    }
-
-    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>> {
-        Vec::new()
     }
 }
 
@@ -251,49 +262,11 @@ impl AsyncWidget for Text {
         }
     }
 
-    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>> {
-        Vec::new()
-    }
 }
 
-#[async_trait]
-impl AsyncWidget for Layout {
-    async fn async_render(&self) -> LayoutRender {
-        LayoutRender {
-            style: Style::default(),
-            layout: match &self.layout {
-                LayoutType::Content(content) => LayoutTypeRender::Content(content.async_render().await),
-                LayoutType::Container { split_direction, layouts } =>{
-                    let mut set = JoinSet::new();
-                    for (i, layout) in layouts.iter().cloned().enumerate() {
-                        set.spawn(async move { (i, layout.read().await.async_render().await) });
-                    }
-                    let mut layouts = Vec::new();
-                    while let Some(Ok(render)) = set.join_next().await {
-                        layouts.push(render)
-                    }
-                    layouts.sort_by(|a, b| a.0.cmp(&b.0));
-
-                    LayoutTypeRender::Container {
-                        split_direction: split_direction.clone(),
-                        layouts: layouts.into_iter().map(|(_, render)| render).collect(),
-                    }  
-                },
-            }
-        }
-    }
-
-    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>> {
-        Vec::new()
-    }
-}
-
-pub enum LayoutTypeRender {
-    Container {
-        split_direction: SplitDirection,
-        layouts: Vec<LayoutRender>,
-    },
-    Content(TextRender),
+pub struct WindowRender {
+    split_dir: SplitDirection,
+    windows: Vec<Box<dyn WidgetRef>>
 }
 
 #[derive(Default)]
@@ -317,10 +290,10 @@ pub struct TextRender {
     pub alignment: Option<Alignment>,
 }
 
-pub struct LayoutRender {
-    style: Style,
-    layout: LayoutTypeRender,
-}
+// pub struct LayoutRender {
+//     pub style: Style,
+//     pub layout: LayoutTypeRender,
+// }
 
 impl WidgetRef for Char {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
@@ -375,47 +348,47 @@ impl WidgetRef for LineRender {
     }
 }
 
-impl WidgetRef for LayoutRender {
-    fn render_ref(&self,area:Rect,buf: &mut Buffer) {
-        buf.set_style(area, self.style);
-        match self.layout {
-            LayoutTypeRender::Content(ref content) => content.render_ref(area, buf),
-            LayoutTypeRender::Container { ref split_direction, ref layouts } => {
-                let windows: u16 = layouts.len().try_into().unwrap();
-                if windows == 0 { return (); }
-                match split_direction {
-                    SplitDirection::Horizontal => {
-                        // split is horizontal. nested containers are stacked vertically
-                        let offset = area.height / windows;
-                        for (i, layout) in layouts.iter().enumerate() {
-                            let area = Rect::new(
-                                area.x,
-                                if i == 0 { area.y } else { area.y + offset + 1 },
-                                area.width,
-                                offset
-                            );
-                            layout.render_ref(area, buf);
-                        }
-                    },
-                    SplitDirection::Vertical => {
-                        // split is vertical. nested containers are stacked horizontally
-                        let offset = area.width / windows;
-                        for (i, layout) in layouts.iter().enumerate() {
-                            let area = Rect::new(
-                                if i == 0 { area.x } else { area.x + offset + 1 },
-                                area.y,
-                                offset,
-                                area.height,
-                            );
-                            layout.render_ref(area, buf);
-                        }
-                    },
-                }
-            },
-        }
-
-    }
-}
+// impl WidgetRef for LayoutRender {
+//     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+//         buf.set_style(area, self.style);
+//         match self.layout {
+//             LayoutTypeRender::Content(ref content) => content.render_ref(area, buf),
+//             LayoutTypeRender::Container { ref split_direction, ref layouts } => {
+//                 let windows: u16 = layouts.len().try_into().unwrap();
+//                 if windows == 0 { return (); }
+//                 match split_direction {
+//                     SplitDirection::Horizontal => {
+//                         // split is horizontal. nested containers are stacked vertically
+//                         let offset = area.height / windows;
+//                         for (i, layout) in layouts.iter().enumerate() {
+//                             let area = Rect::new(
+//                                 area.x,
+//                                 if i == 0 { area.y } else { area.y + offset + 1 },
+//                                 area.width,
+//                                 offset
+//                             );
+//                             layout.render_ref(area, buf);
+//                         }
+//                     },
+//                     SplitDirection::Vertical => {
+//                         // split is vertical. nested containers are stacked horizontally
+//                         let offset = area.width / windows;
+//                         for (i, layout) in layouts.iter().enumerate() {
+//                             let area = Rect::new(
+//                                 if i == 0 { area.x } else { area.x + offset + 1 },
+//                                 area.y,
+//                                 offset,
+//                                 area.height,
+//                             );
+//                             layout.render_ref(area, buf);
+//                         }
+//                     },
+//                 }
+//             },
+//         }
+//
+//     }
+// }
 
 impl WidgetRef for TextRender {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
@@ -437,9 +410,9 @@ impl WidgetRef for TextRender {
 }
 
 impl Mother<Char> for Span {
-    fn add_child(&mut self, child: Char, index: usize) -> TokioRW<Char> {
+    fn add_child(&mut self, child: Char, index: usize) -> ARW<Char> {
         let len = self.characters.len();
-        let mut chars: Vec<TokioRW<Char>> =
+        let mut chars: Vec<ARW<Char>> =
             self.characters
                 .drain(min(index, len)..len)
                 .collect();
@@ -453,9 +426,9 @@ impl Mother<Char> for Span {
 }
 
 impl Mother<Span> for Line {
-    fn add_child(&mut self, child: Span, index: usize) -> TokioRW<Span> {
+    fn add_child(&mut self, child: Span, index: usize) -> ARW<Span> {
         let len = self.spans.len();
-        let mut spans: Vec<TokioRW<Span>> =
+        let mut spans: Vec<ARW<Span>> =
             self.spans
                 .drain(min(index, len)..len)
                 .collect();
@@ -470,9 +443,9 @@ impl Mother<Span> for Line {
 }
 
 impl Mother<Line> for Text {
-    fn add_child(&mut self, child: Line, index: usize) -> TokioRW<Line> {
+    fn add_child(&mut self, child: Line, index: usize) -> ARW<Line> {
         let len = self.lines.len();
-        let mut lines: Vec<TokioRW<Line>> =
+        let mut lines: Vec<ARW<Line>> =
             self.lines
                 .drain(min(index, len)..len)
                 .collect();
@@ -483,27 +456,6 @@ impl Mother<Line> for Text {
 
         self.lines = lines;
         child
-    }
-}
-
-impl TryMother<Layout> for Layout {
-    fn try_add_child(&mut self, child: Layout, index: usize) -> Result<TokioRW<Layout>> {
-        Ok(match self.layout {
-            LayoutType::Content(_) => bail!("Cant add layout to content"),
-            LayoutType::Container { ref mut layouts, .. } => {
-                let len = layouts.len();
-                let mut tail: Vec<TokioRW<Layout>> =
-                    layouts
-                        .drain(min(index, len)..len)
-                        .collect();
-
-                let child = Arc::new(RwLock::new(child));
-                layouts.push(child.clone());
-                layouts.append(&mut tail);
-
-                child
-            }
-        })
     }
 }
 
