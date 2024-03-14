@@ -1,30 +1,9 @@
-use std::time::{Duration, Instant};
 
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
-use tokio::sync::mpsc::UnboundedSender;
+use std::sync::RwLock;
 
-use crate::{primatives::Char, State, Model};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
 
-pub async fn input_listener(
-    model: &'static Model,
-    input_tx: UnboundedSender<Msg>,
-    tick_rate: Duration,
-) -> Result<()> {
-    let mut last_tick = Instant::now();
-    loop {
-        if *model.state.read().await == State::ShutDown { break }
-
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if crossterm::event::poll(timeout)? {
-            if let Some(msg) = handle_events(model, event::read()?).await {
-                input_tx.send(msg)?;
-            }
-            last_tick = Instant::now();
-        }
-    };
-    Ok(())
-}
+use crate::{primatives::Char, State};
 
 #[derive(PartialEq, Eq)]
 pub enum NormalCommand {
@@ -53,58 +32,60 @@ pub enum Msg {
     Normal(NormalCommand),
     Insert(InsertCommand),
     NormalMode,
-    ToFirstChild,
-    ToParent,
-    ToLeftSibling,
-    ToRightSibling,
-    Reset,
     ShutDown
 }
 
-pub async fn handle_events(model: &'static Model, input: Event) -> Option<Msg> {
+pub fn handle_events(
+    mod_keys: &'static RwLock<Vec<ModifierKeyCode>>,
+    app_state: &'static RwLock<State>,
+    input: Event
+) -> Option<Msg> {
     match input {
         Event::Key(key) => match key.code {
             KeyCode::Esc => Some(Msg::NormalMode),
-            _ => handle_keys(model, key).await,
+            _ => handle_keys(mod_keys, app_state, key),
         },
         _ => None,
     }
 }
 
-pub async fn handle_keys(model: &'static Model, key: KeyEvent) -> Option<Msg> {
+pub fn handle_keys(
+    mod_keys: &'static RwLock<Vec<ModifierKeyCode>>,
+    app_state: &'static RwLock<State>,
+    key: KeyEvent
+) -> Option<Msg> {
     match key.kind {
         KeyEventKind::Press => match key.code {
             KeyCode::Modifier(mod_key) =>
-                model.mod_keys
-                    .write()
-                    .await
+                mod_keys
+                    .write().unwrap()
                     .push(mod_key),
             _ => (),
         }
         KeyEventKind::Release => match key.code {
             KeyCode::Modifier(mod_key) =>
-                model.mod_keys
-                    .write()
-                    .await
+                mod_keys
+                    .write().unwrap()
                     .retain(|k| *k == mod_key),
             _ => (),
         }
         _ => ()
     }
-    match model.state.read().await.clone() {
-        State::Normal => Some(Msg::Normal(handle_normal(model, key).await?)),
-        State::Insert => Some(Msg::Insert(handle_insert(model, key).await?)),
+    match app_state.read().unwrap().clone() {
+        State::Normal => Some(Msg::Normal(handle_normal(mod_keys, key)?)),
+        State::Insert => Some(Msg::Insert(handle_insert(mod_keys, key)?)),
         State::ShutDown => Some(Msg::ShutDown),
     }
 }
 
-async fn handle_normal(_model: &'static Model, key: KeyEvent) -> Option<NormalCommand> {
+fn handle_normal(_mod_keys: &'static RwLock<Vec<ModifierKeyCode>>, key: KeyEvent) -> Option<NormalCommand> {
     match key.kind {
         KeyEventKind::Press => match key.code {
             KeyCode::Char('h') => Some(NormalCommand::PrevChar),
             KeyCode::Char('j') => Some(NormalCommand::PrevLine),
             KeyCode::Char('k') => Some(NormalCommand::NextLine),
             KeyCode::Char('l') => Some(NormalCommand::NextChar),
+            KeyCode::Char('q') => Some(NormalCommand::Quit),
             _ => None,
         },
         KeyEventKind::Repeat => None,
@@ -112,10 +93,10 @@ async fn handle_normal(_model: &'static Model, key: KeyEvent) -> Option<NormalCo
     }
 }
 
-async fn handle_insert(model: &'static Model, key: KeyEvent) -> Option<InsertCommand> {
-    let ctrl = model.mod_keys.read().await
+fn handle_insert(mod_keys: &'static RwLock<Vec<ModifierKeyCode>>, key: KeyEvent) -> Option<InsertCommand> {
+    let ctrl = mod_keys.read().unwrap()
         .iter()
-        .find(|&k| *k == ModifierKeyCode::LeftControl)
+        .find(|&k| if let ModifierKeyCode::LeftControl = *k { true } else { false })
         .is_some();
 
     match key.kind {

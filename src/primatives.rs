@@ -5,19 +5,20 @@ use tokio::{sync::RwLock, task::JoinSet};
 use anyhow::{bail, Result};
 use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::WidgetRef};
 
-use crate::ARW;
+use crate::TokioRW;
 
 pub trait Mother<T> {
-    fn add_child(&mut self, child: T, index: usize) -> ARW<T>;
+    fn add_child(&mut self, child: T, index: usize) -> TokioRW<T>;
 }
 
 pub trait TryMother<T> {
-    fn try_add_child(&mut self, child: T, index: usize) -> Result<ARW<T>>;
+    fn try_add_child(&mut self, child: T, index: usize) -> Result<TokioRW<T>>;
 }
 
 #[async_trait]
-pub trait AsyncWidget<T: WidgetRef> {
-    async fn async_render(&self) -> T;
+pub trait AsyncWidget {
+    async fn async_render(&self) -> impl WidgetRef;
+    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>>;
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -28,19 +29,19 @@ pub struct Char {
 
 #[derive(Default, Clone)]
 pub struct Span {
-    pub characters: Vec<ARW<Char>>,
+    pub characters: Vec<TokioRW<Char>>,
     pub style: Style,
 }
 
 #[derive(Default, Clone)]
 pub struct Line {
-    pub spans: Vec<ARW<Span>>,
+    pub spans: Vec<TokioRW<Span>>,
     pub style: Style,
 }
 
 #[derive(Default, Clone)]
 pub struct Text {
-    pub lines: Vec<ARW<Line>>,
+    pub lines: Vec<TokioRW<Line>>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
@@ -61,7 +62,7 @@ pub struct Layout {
 pub enum LayoutType {
     Container {
         split_direction: SplitDirection,
-        layouts: Vec<ARW<Layout>>,
+        layouts: Vec<TokioRW<Layout>>,
     },
     Content(Text),
 }
@@ -111,9 +112,9 @@ impl Text {
         }
     }
 
-    pub fn add_line(&mut self, line: ARW<Line>, index: usize) {
+    pub fn add_line(&mut self, line: TokioRW<Line>, index: usize) {
         let len = self.lines.len();
-        let mut lines: Vec<ARW<Line>> =
+        let mut lines: Vec<TokioRW<Line>> =
             self.lines
                 .drain(min(index, len)..len)
                 .collect();
@@ -124,7 +125,7 @@ impl Text {
         self.lines = lines;
     }
 
-    pub fn get_line(&self, index: usize) -> ARW<Line> {
+    pub fn get_line(&self, index: usize) -> TokioRW<Line> {
         self.lines.get(index)
             .unwrap_or(
                 self.lines.get(self.lines.len() - 1).unwrap()
@@ -143,9 +144,9 @@ impl Line {
             ..Default::default()
         }
     }
-    pub fn add_span(&mut self, span: ARW<Span>, index: usize) {
+    pub fn add_span(&mut self, span: TokioRW<Span>, index: usize) {
         let len = self.spans.len();
-        let mut spans: Vec<ARW<Span>> =
+        let mut spans: Vec<TokioRW<Span>> =
             self.spans
                 .drain(min(index, len)..len)
                 .collect();
@@ -172,7 +173,7 @@ impl Line {
 }
 
 impl TryMother<Line> for Layout {
-    fn try_add_child(&mut self, child: Line, index: usize) -> Result<ARW<Line>> {
+    fn try_add_child(&mut self, child: Line, index: usize) -> Result<TokioRW<Line>> {
         Ok(match self.layout {
             LayoutType::Container { .. } => bail!("Can't add lines to a container"),
             LayoutType::Content(ref mut text) => text.add_child(child, index),
@@ -181,7 +182,7 @@ impl TryMother<Line> for Layout {
 }
 
 #[async_trait]
-impl AsyncWidget<SpanRender> for Span {
+impl AsyncWidget for Span {
     async fn async_render(&self) -> SpanRender {
         let mut set = JoinSet::new();
         for (i, char) in self.characters.iter().cloned().enumerate() {
@@ -195,13 +196,18 @@ impl AsyncWidget<SpanRender> for Span {
 
         SpanRender {
             characters: characters.into_iter().map(|(_, render)| render).collect(),
+            style: self.style,
             ..Default::default()
         }
+    }
+
+    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>> {
+        Vec::new()
     }
 }
 
 #[async_trait]
-impl AsyncWidget<LineRender> for Line {
+impl AsyncWidget for Line {
     async fn async_render(&self) -> LineRender {
         let mut set = JoinSet::new();
         for (i, span) in self.spans.iter().cloned().enumerate() {
@@ -215,13 +221,18 @@ impl AsyncWidget<LineRender> for Line {
 
         LineRender {
             spans: spans.into_iter().map(|(_, render)| render).collect(),
+            style: self.style,
             ..Default::default()
         }
+    }
+
+    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>> {
+        Vec::new()
     }
 }
 
 #[async_trait]
-impl AsyncWidget<TextRender> for Text {
+impl AsyncWidget for Text {
     async fn async_render(&self) -> TextRender {
         let mut set = JoinSet::new();
         for (i, line) in self.lines.iter().cloned().enumerate() {
@@ -235,13 +246,18 @@ impl AsyncWidget<TextRender> for Text {
 
         TextRender { 
             lines: lines.into_iter().map(|(_, render)| render).collect(),
-            ..Default::default()
+            style: self.style,
+            alignment: self.alignment,
         }
+    }
+
+    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>> {
+        Vec::new()
     }
 }
 
 #[async_trait]
-impl AsyncWidget<LayoutRender> for Layout {
+impl AsyncWidget for Layout {
     async fn async_render(&self) -> LayoutRender {
         LayoutRender {
             style: Style::default(),
@@ -265,6 +281,10 @@ impl AsyncWidget<LayoutRender> for Layout {
                 },
             }
         }
+    }
+
+    async fn get_children(&self) -> Vec<TokioRW<dyn AsyncWidget>> {
+        Vec::new()
     }
 }
 
@@ -417,9 +437,9 @@ impl WidgetRef for TextRender {
 }
 
 impl Mother<Char> for Span {
-    fn add_child(&mut self, child: Char, index: usize) -> ARW<Char> {
+    fn add_child(&mut self, child: Char, index: usize) -> TokioRW<Char> {
         let len = self.characters.len();
-        let mut chars: Vec<ARW<Char>> =
+        let mut chars: Vec<TokioRW<Char>> =
             self.characters
                 .drain(min(index, len)..len)
                 .collect();
@@ -433,9 +453,9 @@ impl Mother<Char> for Span {
 }
 
 impl Mother<Span> for Line {
-    fn add_child(&mut self, child: Span, index: usize) -> ARW<Span> {
+    fn add_child(&mut self, child: Span, index: usize) -> TokioRW<Span> {
         let len = self.spans.len();
-        let mut spans: Vec<ARW<Span>> =
+        let mut spans: Vec<TokioRW<Span>> =
             self.spans
                 .drain(min(index, len)..len)
                 .collect();
@@ -450,9 +470,9 @@ impl Mother<Span> for Line {
 }
 
 impl Mother<Line> for Text {
-    fn add_child(&mut self, child: Line, index: usize) -> ARW<Line> {
+    fn add_child(&mut self, child: Line, index: usize) -> TokioRW<Line> {
         let len = self.lines.len();
-        let mut lines: Vec<ARW<Line>> =
+        let mut lines: Vec<TokioRW<Line>> =
             self.lines
                 .drain(min(index, len)..len)
                 .collect();
@@ -467,12 +487,12 @@ impl Mother<Line> for Text {
 }
 
 impl TryMother<Layout> for Layout {
-    fn try_add_child(&mut self, child: Layout, index: usize) -> Result<ARW<Layout>> {
+    fn try_add_child(&mut self, child: Layout, index: usize) -> Result<TokioRW<Layout>> {
         Ok(match self.layout {
             LayoutType::Content(_) => bail!("Cant add layout to content"),
             LayoutType::Container { ref mut layouts, .. } => {
                 let len = layouts.len();
-                let mut tail: Vec<ARW<Layout>> =
+                let mut tail: Vec<TokioRW<Layout>> =
                     layouts
                         .drain(min(index, len)..len)
                         .collect();
