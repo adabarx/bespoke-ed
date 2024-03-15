@@ -1,84 +1,104 @@
 use async_trait::async_trait;
-use crate::{primatives::{AsyncWidget, Layout}, ARW};
+use crate::{primatives::{AsyncWidget, Window, WindowChild}, ARW};
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use anyhow::Result;
 
-type DynZipper = Box<dyn Zipper<dyn AsyncWidget>>;
-
 #[async_trait]
-pub trait Zipper<T: AsyncWidget> {
-    async fn focus_read(&self) -> RwLockReadGuard<T>;
-    async fn focus_write(&self) -> RwLockWriteGuard<T>;
+pub trait Zipper<F, C>
+where
+    F: AsyncWidget + ?Sized + 'static,
+    C: AsyncWidget + ?Sized + 'static,
+{
+    async fn focus_read(&self) -> RwLockReadGuard<F>;
+    async fn focus_write(&self) -> RwLockWriteGuard<F>;
 
     async fn go_back(self) -> Option<Breadcrumb>;
-    async fn go_to_parent(self) -> Move;
+    async fn go_to_parent(self) -> Move<F, F>;
 
-    async fn go_left(self) -> Move;
-    async fn go_right(self) -> Move;
+    async fn go_left(self) -> Move<F, F>;
+    async fn go_right(self) -> Move<F, F>;
 
-    async fn go_to_child(self) -> Move;
+    async fn go_to_child(self) -> Move<F, C>;
     async fn update_children(self) -> Result<()>;
 }
 
+type DynZipper = Box<dyn Zipper<dyn AsyncWidget, dyn AsyncWidget>>;
+
 #[derive(PartialEq, Eq)]
+#[derive(Clone)]
 enum PrevDir {
     Left,
     Right,
     Parent,
 }
 
-enum Move {
-    Passed(DynZipper),
-    Blocked(DynZipper)
+enum Move<F, C>
+where
+    F: AsyncWidget + ?Sized + 'static,
+    C: AsyncWidget + ?Sized + 'static,
+{
+    Parent(DynZipper),
+    Child(Box<C>),
+    Left(Box<F>),
+    Right(Box<F>),
+    Blocked(Box<F>),
 }
 
-impl Move {
-    pub fn unwrap(self) -> DynZipper {
-        match self {
-            Move::Passed(rv) => rv,
-            Move::Blocked(rv) => rv,
-        }
-    }
-}
-
+#[derive(Clone)]
 struct Breadcrumb {
     zipper: DynZipper,
     direction: PrevDir,
 }
 
-pub struct RootZipper {
-    focus: &'static RwLock<Layout>,
-    children: Vec<ARW<Layout>>
+pub struct RootZipper
+where
+{
+    root: &'static RwLock<Window>,
+    children: Vec<ARW<DynZipper>>
 }
 
-impl RootZipper {
-    pub async fn new(focus: &'static RwLock<Layout>) -> Self {
-        let children = focus.read().await.get_children();
-        Self { focus, children }
+impl RootZipper
+{
+    pub async fn init(root: &'static RwLock<Window>) -> Self {
+        let children = root.read().await.windows.clone();
+        Self { root, children }
     }
 }
 
-pub struct LeafZipper<T: AsyncWidget> {
+pub struct LeafZipper<F> 
+where
+    F: AsyncWidget + ?Sized + 'static,
+{
     previous: Breadcrumb,
-    focus: ARW<T>,
-    left: Vec<ARW<dyn AsyncWidget>>,
-    right: Vec<ARW<dyn AsyncWidget>>,
+    focus: ARW<F>,
+    left: Vec<ARW<F>>,
+    right: Vec<ARW<F>>,
 }
 
-pub struct BranchZipper<T: AsyncWidget> {
+#[derive(Clone)]
+pub struct BranchZipper<F, C>
+where
+    F: AsyncWidget + Clone + ?Sized + 'static + Send + Sync,
+    C: AsyncWidget + Clone + ?Sized + 'static + Send + Sync,
+{
     previous: Breadcrumb,
-    focus: ARW<T>,
-    left: Vec<ARW<dyn AsyncWidget>>,
-    right: Vec<ARW<dyn AsyncWidget>>,
-    children: Vec<ARW<dyn AsyncWidget>>
+    focus: ARW<F>,
+    left: Vec<ARW<F>>,
+    right: Vec<ARW<F>>,
+    children: Vec<ARW<C>>
 }
 
-impl<T: AsyncWidget> Zipper<T> for BranchZipper<T> {
-    async fn focus_read(&self) -> RwLockReadGuard<T> {
+#[async_trait]
+impl<F, C> Zipper<F, C> for BranchZipper<F, C>
+where
+    F: AsyncWidget + Clone + 'static + Send + Sync,
+    C: AsyncWidget + Clone + ?Sized + 'static + Send + Sync,
+{
+    async fn focus_read(&self) -> RwLockReadGuard<F> {
         self.focus.read().await
     }
 
-    async fn focus_write(&self) -> RwLockWriteGuard<T> {
+    async fn focus_write(&self) -> RwLockWriteGuard<F> {
         self.focus.write().await
     }
 
@@ -86,18 +106,14 @@ impl<T: AsyncWidget> Zipper<T> for BranchZipper<T> {
         Some(self.previous)
     }
 
-    async fn go_to_parent(self) -> Move {
-        let mut curr: Box<DynZipper> = Box::new(self);
-        while let Some(prev) = self.go_back().await {
-            if prev.direction == PrevDir::Parent { break }
-            curr = prev.zipper;
-        }
-        Move::Passed(Box::new(self))
+    async fn go_to_parent(self) -> Move<F, F> {
+        if self.previous.direction == PrevDir::Parent { Move::Parent(self.previous.zipper) }
+        else { self.previous.zipper.go_to_parent() }
     }
 
-    async fn go_left(self) -> Move {
+    async fn go_left(self) -> Move<F, F> {
         if self.previous.direction == PrevDir::Left {
-            return Move::Passed(self.previous.zipper);
+            return Move::Left(self.previous.zipper);
         }
         let curr_index = self.left.len();
         if curr_index == 0 { return Move::Blocked(self) }
@@ -118,7 +134,7 @@ impl<T: AsyncWidget> Zipper<T> for BranchZipper<T> {
             }
         ))
     }
-    async fn go_right(self) -> Move {
+    async fn go_right(self) -> Move<F, F> {
         if self.previous.direction == PrevDir::Right {
             return Move::Passed(self.previous.zipper);
         }
@@ -141,10 +157,12 @@ impl<T: AsyncWidget> Zipper<T> for BranchZipper<T> {
         ))
     }
 
-    async fn go_to_child(self) -> Move {
+    async fn go_to_child(self) -> Move<F, C> {
 
     }
-    async fn update_children(self) -> Result<()> {}
+    async fn update_children(self) -> Result<()> {
+        Ok(())
+    }
 }
 
 

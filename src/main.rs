@@ -16,7 +16,7 @@ mod zipper;
 mod flipflop;
 mod input;
 
-use primatives::{AsyncWidget, Layout, LayoutRender, LayoutType, LayoutTypeRender, ParentWidget, SplitDirection, Text};
+use primatives::{AsyncWidget, Text, Window, WindowRender};
 use tokio::time::sleep;
 use zipper::RootZipper;
 
@@ -28,21 +28,6 @@ const RENDER_DEADLINE: u64 = BILLIE / FPS_LIMIT;
 const CONTROL_DEADLINE: u64 = BILLIE / (FPS_LIMIT * 2);
 
 type ARW<T> = Arc<RwLock<T>>;
-
-impl AsyncWidget for &'static RwLock<Layout> {
-    async fn async_render(&self) -> LayoutRender {
-        let layout = self.read().await;
-        LayoutRender {
-            style: layout.style.clone(),
-            layout: match layout.layout {
-                LayoutType::Container { split_direction, layouts } => 
-                    LayoutTypeRender::Container { split_direction, layouts },
-                LayoutType::Content(text) =>
-                    LayoutTypeRender::Content(text.async_render.await),
-            }
-        }
-    }
-}
 
 #[derive(Parser, Debug)]
 struct CLI { path: Option<PathBuf> }
@@ -70,19 +55,17 @@ async fn main() -> Result<()> {
     // set up global model
     let state: &'static RwLock<State> = Box::leak(Box::new(RwLock::new(State::Normal)));
     let mod_keys: &'static RwLock<Vec<ModifierKeyCode>> = Box::leak(Box::new(RwLock::new(Vec::new())));
-    let root_layout: &'static RwLock<Layout> = Box::leak(Box::new(
-        RwLock::new(Layout::new(LayoutType::Container {
-            split_direction: SplitDirection::Vertical,
-            layouts: vec![
-                Arc::new(RwLock::new(Layout::new(LayoutType::Content(Text::raw(content)))))
-            ]
-        }))
+    let root_layout: &'static RwLock<Window> = Box::leak(Box::new(
+        RwLock::new(Window {
+            windows: vec![Arc::new(RwLock::new(Text::raw(content)))],
+            ..Default::default()
+        })
     ));
 
     let mut terminal = tui::init_app()?;
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Msg>();
-    let (render_tx, mut render_rx) = mpsc::unbounded_channel::<LayoutRender>();
+    let (render_tx, mut render_rx) = mpsc::unbounded_channel::<WindowRender>();
 
     //
     // input thread:
@@ -119,7 +102,7 @@ async fn main() -> Result<()> {
         let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
         let mut last_tick = Instant::now();
 
-        let mut zipper = RootZipper::new(root_layout.clone()).await;
+        let mut zipper = RootZipper::init(root_layout.clone()).await;
         loop {
             if *state.read().await == State::ShutDown { break }
 

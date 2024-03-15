@@ -17,27 +17,25 @@ pub trait TryMother<T> {
 
 #[async_trait]
 pub trait AsyncWidget {
-    async fn async_render(&self) -> impl WidgetRef;
+    async fn async_render(&self) -> Box<dyn Render + Send>;
 }
 
 #[async_trait]
-pub trait ParentWidget<T: AsyncWidget + ?Sized> {
+pub trait ParentWidget<T>
+where
+    T: AsyncWidget + ?Sized + 'static + Send + Sync
+{
     async fn get_children(&self) -> Vec<ARW<T>>;
 }
 
-trait WindowChild {}
-
-impl<T: WindowChild> WindowChild for Window<T> {}
-impl WindowChild for Text {}
-
-impl<T> ParentWidget<T> for Vec<ARW<T>>
-where
-    T: AsyncWidget + WindowChild + ?Sized
-{
-    async fn get_children(&self) -> Vec<ARW<T>> {
-        self.clone()
-    }
+pub trait Render: WidgetRef + Send {
+    fn get_width_height(&self) -> (u16, u16);
 }
+
+pub trait WindowChild {}
+
+impl WindowChild for Window {}
+impl WindowChild for Text {}
 
 impl ParentWidget<Char> for Span {
     async fn get_children(&self) -> Vec<ARW<Char>> {
@@ -83,17 +81,19 @@ pub struct Text {
     pub alignment: Option<Alignment>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub enum SplitDirection {
+    #[default]
     Vertical,
     Horizontal,
 }
 
 
-#[derive(Clone)]
-pub struct Window<T: WindowChild> {
+#[derive(Clone, Default)]
+pub struct Window {
     pub style: Style,
-    pub layout: Vec<ARW<T>>,
+    pub split_dir: SplitDirection,
+    pub windows: Vec<ARW<dyn AsyncWidget>>,
 }
 
 
@@ -195,17 +195,17 @@ impl Line {
 
 #[async_trait]
 impl AsyncWidget for Char {
-    async fn async_render(&self) -> Char {
-        self.clone()
+    async fn async_render(&self) -> Box<dyn Render + Send> {
+        Box::new(self.clone())
     }
 }
 
 #[async_trait]
 impl AsyncWidget for Span {
-    async fn async_render(&self) -> SpanRender {
+    async fn async_render(&self) -> Box<dyn Render + Send> {
         let mut set = JoinSet::new();
         for (i, char) in self.characters.iter().cloned().enumerate() {
-            set.spawn(async move { (i, char.read().await.clone()) });
+            set.spawn(async move { (i, char.read().await.async_render().await) });
         }
         let mut characters = Vec::new();
         while let Some(Ok(char)) = set.join_next().await {
@@ -213,17 +213,17 @@ impl AsyncWidget for Span {
         }
         characters.sort_by(|a, b| a.0.cmp(&b.0));
 
-        SpanRender {
+        Box::new(SpanRender {
             characters: characters.into_iter().map(|(_, render)| render).collect(),
             style: self.style,
             ..Default::default()
-        }
+        })
     }
 }
 
 #[async_trait]
 impl AsyncWidget for Line {
-    async fn async_render(&self) -> LineRender {
+    async fn async_render(&self) -> Box<dyn Render + Send> {
         let mut set = JoinSet::new();
         for (i, span) in self.spans.iter().cloned().enumerate() {
             set.spawn(async move { (i, span.read().await.async_render().await) });
@@ -234,71 +234,75 @@ impl AsyncWidget for Line {
         }
         spans.sort_by(|a, b| a.0.cmp(&b.0));
 
-        LineRender {
+        Box::new(LineRender {
             spans: spans.into_iter().map(|(_, render)| render).collect(),
             style: self.style,
             ..Default::default()
-        }
+        })
     }
 }
 
 #[async_trait]
 impl AsyncWidget for Text {
-    async fn async_render(&self) -> TextRender {
+    async fn async_render(&self) -> Box<dyn Render + Send> {
         let mut set = JoinSet::new();
         for (i, line) in self.lines.iter().cloned().enumerate() {
             set.spawn(async move { (i, line.read().await.async_render().await) });
         }
+
         let mut lines = Vec::new();
         while let Some(Ok(line)) = set.join_next().await {
             lines.push(line);
         }
         lines.sort_by(|a, b| a.0.cmp(&b.0));
 
-        TextRender { 
-            lines: lines.into_iter().map(|(_, render)| render).collect(),
+        Box::new(TextRender { 
+            lines: lines.into_iter().map(|r| r.1).collect(),
             style: self.style,
             alignment: self.alignment,
-        }
+        })
     }
-
 }
+
+type DynRender = Box<dyn Render + Send>;
 
 pub struct WindowRender {
     split_dir: SplitDirection,
-    windows: Vec<Box<dyn WidgetRef>>
+    style: Style,
+    windows: Vec<Box<dyn WidgetRef + Send>>
 }
 
 #[derive(Default)]
 pub struct SpanRender {
-    pub characters: Vec<Char>,
+    pub characters: Vec<DynRender>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
 
 #[derive(Default)]
 pub struct LineRender {
-    pub spans: Vec<SpanRender>,
+    pub spans: Vec<DynRender>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
 
 #[derive(Default)]
 pub struct TextRender {
-    pub lines: Vec<LineRender>,
+    pub lines: Vec<DynRender>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
-
-// pub struct LayoutRender {
-//     pub style: Style,
-//     pub layout: LayoutTypeRender,
-// }
 
 impl WidgetRef for Char {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         buf.set_style(area, self.style);
         buf.get_mut(area.x, area.y).set_symbol(&self.char.to_string());
+    }
+}
+
+impl Render for Char {
+    fn get_width_height(&self) -> (u16, u16) {
+        (1, 1)
     }
 }
 
@@ -324,6 +328,12 @@ impl WidgetRef for SpanRender {
     }
 }
 
+impl Render for SpanRender {
+    fn get_width_height(&self) -> (u16, u16) {
+        (self.characters.len() as u16, 1)
+    }
+}
+
 impl WidgetRef for LineRender {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
@@ -336,59 +346,63 @@ impl WidgetRef for LineRender {
         buf.set_style(area, self.style);
         let mut offset: u16 = 0;
         for span in self.spans.iter() {
+            let (width, height) = span.get_width_height();
             let area = Rect {
                 x: area.x + offset,
                 y: area.y,
-                width: span.characters.len() as u16,
-                height: 1,
+                width,
+                height,
             };
             span.render_ref(area, buf);
-            offset += span.characters.iter().count() as u16;
+            offset += width;
         }
     }
 }
 
-// impl WidgetRef for LayoutRender {
-//     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
-//         buf.set_style(area, self.style);
-//         match self.layout {
-//             LayoutTypeRender::Content(ref content) => content.render_ref(area, buf),
-//             LayoutTypeRender::Container { ref split_direction, ref layouts } => {
-//                 let windows: u16 = layouts.len().try_into().unwrap();
-//                 if windows == 0 { return (); }
-//                 match split_direction {
-//                     SplitDirection::Horizontal => {
-//                         // split is horizontal. nested containers are stacked vertically
-//                         let offset = area.height / windows;
-//                         for (i, layout) in layouts.iter().enumerate() {
-//                             let area = Rect::new(
-//                                 area.x,
-//                                 if i == 0 { area.y } else { area.y + offset + 1 },
-//                                 area.width,
-//                                 offset
-//                             );
-//                             layout.render_ref(area, buf);
-//                         }
-//                     },
-//                     SplitDirection::Vertical => {
-//                         // split is vertical. nested containers are stacked horizontally
-//                         let offset = area.width / windows;
-//                         for (i, layout) in layouts.iter().enumerate() {
-//                             let area = Rect::new(
-//                                 if i == 0 { area.x } else { area.x + offset + 1 },
-//                                 area.y,
-//                                 offset,
-//                                 area.height,
-//                             );
-//                             layout.render_ref(area, buf);
-//                         }
-//                     },
-//                 }
-//             },
-//         }
-//
-//     }
-// }
+impl Render for LineRender {
+    fn get_width_height(&self) -> (u16, u16) {
+        let width = self.spans
+            .iter()
+            .fold(0_u16, |acc, width| acc + width.get_width_height().0);
+        (width, 1)
+    }
+}
+
+impl WidgetRef for WindowRender {
+    fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+        buf.set_style(area, self.style);
+        let windows: u16 = self.windows.len() as u16;
+        if windows == 0 { return; }
+        match self.split_dir {
+            SplitDirection::Horizontal => {
+                // split is horizontal. nested containers are stacked vertically
+                let offset = area.height / windows;
+                for (i, layout) in self.windows.iter().enumerate() {
+                    let area = Rect::new(
+                        area.x,
+                        if i == 0 { area.y } else { area.y + offset + 1 },
+                        area.width,
+                        offset
+                    );
+                    layout.render_ref(area, buf);
+                }
+            },
+            SplitDirection::Vertical => {
+                // split is vertical. nested containers are stacked horizontally
+                let offset = area.width / windows;
+                for (i, layout) in self.windows.iter().enumerate() {
+                    let area = Rect::new(
+                        if i == 0 { area.x } else { area.x + offset + 1 },
+                        area.y,
+                        offset,
+                        area.height,
+                    );
+                    layout.render_ref(area, buf);
+                }
+            },
+        }
+    }
+}
 
 impl WidgetRef for TextRender {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
@@ -398,14 +412,18 @@ impl WidgetRef for TextRender {
             let area = Rect {
                 x: area.x,
                 y: area.y + line_number,
-                width: line.spans
-                    .iter()
-                    .fold(0_u16, |acc, sp| acc + sp.characters.len() as u16),
+                width: line.get_width_height().0,
                 height: 1,
             };
             line.render_ref(area, buf);
             line_number += 1;
         }
+    }
+}
+
+impl Render for TextRender {
+    fn get_width_height(&self) -> (u16, u16) {
+        (0, 0)
     }
 }
 
