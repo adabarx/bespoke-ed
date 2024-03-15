@@ -1,3 +1,4 @@
+//time 2 rewrite
 use std::{cmp::min, collections::VecDeque};
 
 use ratatui::style::{Color, Style};
