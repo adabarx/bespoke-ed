@@ -3,7 +3,12 @@ use std::{cmp::min, sync::Arc, u16};
 use async_trait::async_trait;
 use tokio::{sync::RwLock, task::JoinSet};
 use anyhow::{anyhow, bail, Result};
-use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::{Color, Style}, widgets::WidgetRef};
+use ratatui::{
+    widgets::WidgetRef,
+    buffer::Buffer,
+    layout::{Alignment, Rect},
+    style::{Color, Style},
+};
 
 use crate::{zipper::WindowChild, ARW};
 
@@ -18,8 +23,11 @@ pub trait TryMother<T> {
 #[async_trait]
 pub trait AsyncWidget<Child: Send + Sync> {
     async fn async_render(&self) -> impl WidgetRef;
-    async fn try_remove_child(&mut self, index: usize) -> Result<()> { Err(anyhow!("No Children Allowed"))}
-    async fn get_children(&self) -> Option<Vec<Child>> { None }
+    async fn try_remove_child(&mut self, index: usize) -> Result<()> {
+        let _ = index;
+        Err(anyhow!("No Children Allowed"))
+    }
+    async fn get_children(&self) -> Option<Vec<ARW<Child>>> { None }
     async fn highlight(&mut self);
     async fn no_highlight(&mut self);
 }

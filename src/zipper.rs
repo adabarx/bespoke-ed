@@ -1,9 +1,10 @@
 //time 2 rewrite
-use std::{collections::VecDeque, marker::PhantomData};
+use std::{cmp::min, collections::VecDeque, marker::PhantomData, sync::Arc};
 
 use ratatui::style::{Color, Style};
 use async_trait::async_trait;
 use either::*;
+use tokio::sync::RwLock;
 
 use crate::{primatives::{AsyncWidget, Char, Layout, LayoutType, Line, Span, Text}, ARW};
 
@@ -136,27 +137,72 @@ pub enum WindowChild {
 }
 
 #[derive(Clone)]
-pub struct Zipper<Focus, Child, Parent, GrandParent, GrandChild>
+pub struct Zipper<Focus, Child, Parent, ParentZipper, GrandParent, GrandChild>
 where
     Focus: AsyncWidget<Child> + Clone + Send + Sync,
     Child: AsyncWidget<GrandChild> + Clone + Send + Sync,
-    Parent: TreeZipper<Parent, Focus, GrandParent> + Clone,
+    Parent: AsyncWidget<Focus> + Clone + Send + Sync,
+    ParentZipper: TreeZipper<Parent, Focus, GrandParent> + Clone + Send + Sync,
     GrandChild: Clone + Send + Sync
 {
     focus: ARW<Focus>,
     parent: Option<Box<Parent>>,
-    children: Option<Vec<Child>>,
-    left: Vec<Focus>,
-    right: VecDeque<Focus>,
-    phantom: PhantomData<(GrandChild, GrandParent)>
+    children: Option<Vec<ARW<Child>>>,
+    left: Vec<ARW<Focus>>,
+    right: VecDeque<ARW<Focus>>,
+    pd: PhantomData<(GrandChild, GrandParent, ParentZipper)>
 }
 
-#[async_trait]
-impl<F, C, P, Gp, Gc> TreeZipper<F, C, P> for Zipper<F, C, P, Gp, Gc>
+impl<F, C, P, Pz, Gp, Gc> Zipper<F, C, P, Pz, Gp, Gc>
 where
     F: AsyncWidget<C> + Clone + Send + Sync,
     C: AsyncWidget<Gc> + Clone + Send + Sync,
-    P: TreeZipper<P, F, Gp> + Clone + Sync,
+    P: AsyncWidget<F> + Clone + Send + Sync,
+    Pz: TreeZipper<P, F, Gp> + Clone + Send + Sync,
+    Gc: Clone + Send + Sync,
+    Gp: Sync
+{
+    pub async fn new_root(focus: ARW<F>) -> Self {
+        let children =
+            Some(focus
+                .read().await
+                .get_children().await
+                .unwrap());
+        Self {
+            focus,
+            children,
+            left: Vec::new(),
+            right: VecDeque::new(),
+            parent: None,
+            pd: PhantomData,
+        }
+    }
+
+    pub async fn new_branch(mom: P, index: usize) -> Self {
+        let siblings = mom.get_children().await.unwrap();
+        let index = min(index, siblings.len());
+        let focus = siblings[index].clone();
+        let left = siblings[0..index].iter().cloned().collect();
+        let right = siblings[index + 1..].iter().cloned().collect();
+        let children = focus.read().await.get_children().await;
+        Self {
+            focus,
+            children,
+            left,
+            right,
+            parent: Some(Box::new(mom)),
+            pd: PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<F, C, P, Pz, Gp, Gc> TreeZipper<F, C, P> for Zipper<F, C, P, Pz, Gp, Gc>
+where
+    F: AsyncWidget<C> + Clone + Send + Sync,
+    C: AsyncWidget<Gc> + Clone + Send + Sync,
+    P: AsyncWidget<F> + Clone + Send + Sync,
+    Pz: TreeZipper<P, F, Gp> + Clone + Send + Sync,
     Gc: Clone + Send + Sync,
     Gp: Sync
 {
