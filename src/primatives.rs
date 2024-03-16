@@ -2,10 +2,10 @@ use std::{cmp::min, sync::Arc, u16};
 
 use async_trait::async_trait;
 use tokio::{sync::RwLock, task::JoinSet};
-use anyhow::{bail, Result};
-use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::Style, widgets::WidgetRef};
+use anyhow::{anyhow, bail, Result};
+use ratatui::{buffer::Buffer, layout::{Alignment, Rect}, style::{Color, Style}, widgets::WidgetRef};
 
-use crate::ARW;
+use crate::{zipper::WindowChild, ARW};
 
 pub trait Mother<T> {
     fn add_child(&mut self, child: T, index: usize) -> ARW<T>;
@@ -16,8 +16,12 @@ pub trait TryMother<T> {
 }
 
 #[async_trait]
-pub trait AsyncWidget<T: WidgetRef> {
-    async fn async_render(&self) -> T;
+pub trait AsyncWidget<Child: Send + Sync> {
+    async fn async_render(&self) -> impl WidgetRef;
+    async fn try_remove_child(&mut self, index: usize) -> Result<()> { Err(anyhow!("No Children Allowed"))}
+    async fn get_children(&self) -> Option<Vec<Child>> { None }
+    async fn highlight(&mut self);
+    async fn no_highlight(&mut self);
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -181,7 +185,21 @@ impl TryMother<Line> for Layout {
 }
 
 #[async_trait]
-impl AsyncWidget<SpanRender> for Span {
+impl AsyncWidget<Char> for Char {
+    async fn async_render(&self) -> Char {
+        self.clone()
+    }
+    async fn highlight(&mut self) {
+        self.style.bg = Some(Color::White);
+        self.style.fg = Some(Color::Black);
+    }
+    async fn no_highlight(&mut self) {
+        self.style = Style::default();
+    }
+}
+
+#[async_trait]
+impl AsyncWidget<Char> for Span {
     async fn async_render(&self) -> SpanRender {
         let mut set = JoinSet::new();
         for (i, char) in self.characters.iter().cloned().enumerate() {
@@ -198,10 +216,17 @@ impl AsyncWidget<SpanRender> for Span {
             ..Default::default()
         }
     }
+    async fn highlight(&mut self) {
+        self.style.bg = Some(Color::White);
+        self.style.fg = Some(Color::Black);
+    }
+    async fn no_highlight(&mut self) {
+        self.style = Style::default();
+    }
 }
 
 #[async_trait]
-impl AsyncWidget<LineRender> for Line {
+impl AsyncWidget<Span> for Line {
     async fn async_render(&self) -> LineRender {
         let mut set = JoinSet::new();
         for (i, span) in self.spans.iter().cloned().enumerate() {
@@ -218,10 +243,17 @@ impl AsyncWidget<LineRender> for Line {
             ..Default::default()
         }
     }
+    async fn highlight(&mut self) {
+        self.style.bg = Some(Color::White);
+        self.style.fg = Some(Color::Black);
+    }
+    async fn no_highlight(&mut self) {
+        self.style = Style::default();
+    }
 }
 
 #[async_trait]
-impl AsyncWidget<TextRender> for Text {
+impl AsyncWidget<Line> for Text {
     async fn async_render(&self) -> TextRender {
         let mut set = JoinSet::new();
         for (i, line) in self.lines.iter().cloned().enumerate() {
@@ -238,10 +270,17 @@ impl AsyncWidget<TextRender> for Text {
             ..Default::default()
         }
     }
+    async fn highlight(&mut self) {
+        self.style.bg = Some(Color::White);
+        self.style.fg = Some(Color::Black);
+    }
+    async fn no_highlight(&mut self) {
+        self.style = Style::default();
+    }
 }
 
 #[async_trait]
-impl AsyncWidget<LayoutRender> for Layout {
+impl AsyncWidget<WindowChild> for Layout {
     async fn async_render(&self) -> LayoutRender {
         LayoutRender {
             style: Style::default(),
@@ -265,6 +304,13 @@ impl AsyncWidget<LayoutRender> for Layout {
                 },
             }
         }
+    }
+    async fn highlight(&mut self) {
+        self.style.bg = Some(Color::White);
+        self.style.fg = Some(Color::Black);
+    }
+    async fn no_highlight(&mut self) {
+        self.style = Style::default();
     }
 }
 
