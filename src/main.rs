@@ -1,15 +1,19 @@
+#![allow(dead_code)]
 use std::path::PathBuf;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::{Instant, Duration};
 use std::fs;
 
+use either::Either::Right;
+use input::handle_insert;
+use input::handle_normal;
+use primatives::Root;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use clap::Parser;
 use crossterm::event::{self, ModifierKeyCode};
 use anyhow::Result;
-use input::{InsertCommand, Msg, NormalCommand};
+use input::Msg;
 
 mod tui;
 mod primatives;
@@ -17,11 +21,12 @@ mod zipper;
 mod flipflop;
 mod input;
 
-use primatives::{Layout, LayoutRender, LayoutType, SplitDirection, Text, AsyncWidget};
-use tokio::time::sleep;
-use zipper::{TreeZipper, Zipper};
+use primatives::{Window, WindowRender, SplitDirection, Text, AsyncWidget};
+use zipper::RootZipper;
+use tokio::time::{sleep, Instant, Duration};
+use zipper::Zipper;
 
-use crate::input::handle_events;
+use crate::input::handle_events_old;
 
 const BILLY: u64 = 1_000_000_000;
 const FPS_LIMIT: u64 = 60;
@@ -41,36 +46,12 @@ enum State {
     ShutDown,
 }
 
-async fn update<F, C, P>(
-    _state: &'static RwLock<State>,
-    zipper: impl TreeZipper<F, C, P>,
-    _msg: Msg
-) -> impl TreeZipper<F, C, P> {
-    zipper
-}
-
-
-async fn update_normal<F, C, P>(
-    _state: &'static RwLock<State>,
-    mut zipper: impl TreeZipper<F, C, P>,
-    _msg: NormalCommand
-) -> impl TreeZipper<F, C, P> {
-    zipper
-}
-
-async fn update_insert<F, C, P>(
-    _state: &'static RwLock<State>,
-    zipper: impl TreeZipper<F, C, P>,
-    _msg: InsertCommand
-) -> impl TreeZipper<F, C, P> {
-    zipper
-}
-
 pub async fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
     let timeout = tick_rate.saturating_sub(last_tick.elapsed());
     if !timeout.is_zero() { sleep(timeout).await; }
     Instant::now()
 }
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -81,19 +62,20 @@ async fn main() -> Result<()> {
 
     let state: &'static RwLock<State> = Box::leak(Box::new(RwLock::new(State::Normal)));
     let mod_keys: &'static RwLock<Vec<ModifierKeyCode>> = Box::leak(Box::new(RwLock::new(Vec::new())));
-    let window: &'static RwLock<Layout> = Box::leak(Box::new(
-        RwLock::new(Layout::new(LayoutType::Container {
-            split_direction: SplitDirection::Horizontal,
-            layouts: vec![
-                Arc::new(RwLock::new(Layout::new(LayoutType::Content(Text::raw(content))))),
-            ]
-        }))
+    let root: &'static RwLock<Root> = Box::leak(Box::new(
+        RwLock::new(Root::new(SplitDirection::Vertical))
     ));
+    root.write().await.children.push(
+        Arc::new(RwLock::new(Window::new(SplitDirection::Vertical)))
+    );
+    root.write().await.children[0].write().await.children.push(
+        Right(Arc::new(RwLock::new(Text::raw(content))))
+    );
 
     let mut terminal = tui::init_app()?;
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Msg>();
-    let (render_tx, mut render_rx) = mpsc::unbounded_channel::<LayoutRender>();
+    let (render_tx, mut render_rx) = mpsc::unbounded_channel::<WindowRender>();
 
     //
     // input thread:
@@ -102,15 +84,26 @@ async fn main() -> Result<()> {
     //     3. sends the commands to the control thread
     //
 
-    let input_thread = tokio::spawn(async move {
+    tokio::spawn(async move {
         let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
         let mut last_tick = Instant::now();
         loop {
-            if *state.read().await == State::ShutDown { break }
-
-            let timeout = (tick_rate / 4).saturating_sub(last_tick.elapsed());
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
             if crossterm::event::poll(timeout).unwrap() {
-                if let Some(msg) = handle_events(mod_keys, state, event::read().unwrap()).await {
+                // if let Some(msg) = handle_events_old(
+                //     mod_keys,
+                //     state,
+                //     event::read().unwrap()
+                // ).await {
+                //     input_tx.send(msg).unwrap();
+                // }
+                let event = event::read().unwrap();
+                let msg = match *state.read().await {
+                    State::Normal => handle_normal(mod_keys, event).await,
+                    State::Insert => handle_insert(mod_keys, event).await,
+                    State::ShutDown => break,
+                };
+                if let Some(msg) = msg {
                     input_tx.send(msg).unwrap();
                 }
                 last_tick = Instant::now();
@@ -125,27 +118,27 @@ async fn main() -> Result<()> {
     //     3. zippers modify the atomic tree
     //
 
-    // let control_thread = tokio::spawn(async move {
-    //     let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
-    //     let mut last_tick = Instant::now();
-    //
-    //     let mut zipper = Zipper {
-    //         focus: window,
-    //         children: window.read().await.get_children().await.unwrap()
-    //     };
-    //
-    //     loop {
-    //         if *state.read().await == State::ShutDown { break }
-    //
-    //         // handle input
-    //         while let Ok(msg) = input_rx.try_recv() {
-    //             zipper = update(state, zipper, msg).await;
-    //         }
-    //
-    //         last_tick = timeout_sleep(tick_rate / 4, last_tick).await;
-    //     }
-    // });
-    //
+    tokio::spawn(async move {
+        let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
+        let mut last_tick = Instant::now();
+
+        let _zipper = Box::new(RootZipper::new(root).await) as Box<dyn Zipper + Send>;
+
+        'main: loop {
+            // handle input
+            while let Ok(_msg) = input_rx.try_recv() {
+                // execute user commands
+                match *state.read().await {
+                    State::Normal => (),
+                    State::Insert => (),
+                    State::ShutDown => break 'main,
+                }
+            }
+
+            last_tick = timeout_sleep(tick_rate, last_tick).await;
+        }
+    });
+
     //
     // build thread:
     //     1. asynchronously traverses the atomic tree
@@ -153,13 +146,13 @@ async fn main() -> Result<()> {
     //     3. sends the render to the render thread
     //
 
-    let build_thread = tokio::spawn(async move {
+    tokio::spawn(async move {
         let tick_rate = Duration::from_nanos(RENDER_DEADLINE);
         let mut last_tick = Instant::now();
         loop {
             if *state.read().await == State::ShutDown { break }
             
-            render_tx.send(window.read().await.async_render().await).unwrap();
+            render_tx.send(root.async_render().await).unwrap();
 
             last_tick = timeout_sleep(tick_rate, last_tick).await;
         }
@@ -172,8 +165,16 @@ async fn main() -> Result<()> {
     //     2. draws the render to the terminal
     //
 
+    // let mut fps_tick = Instant::now();
+    // let mut fps = 0_f64;
     while let Some(render) = render_rx.recv().await {
         terminal.draw(|frame| frame.render_widget_ref(render, frame.size()))?;
+
+        // rudimentary debug stuff
+        //
+        // let tick = Instant::now();
+        // fps = 1_f64 / tick.duration_since(fps_tick).as_secs_f64();
+        // fps_tick = tick;
     }
 
     tui::teardown_app()
