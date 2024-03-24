@@ -7,16 +7,18 @@ use tokio::sync::RwLock;
 
 use crate::{primatives::{Char, Line, Root, Span, Text, Window}, ARW};
 
+pub type DynZipper = Box<dyn Zipper + Send>;
+
 #[async_trait]
 pub trait Zipper {
-    // async fn insert(&mut self, char: char) -> Box<dyn Zipper + Send>;
+    // async fn insert(&mut self, char: char) -> DynZipper;
     // async fn delete(&mut self);
 
-    async fn parent(self) -> Box<dyn Zipper + Send>;
-    async fn child(self, index: usize) -> Box<dyn Zipper + Send>;
+    async fn parent(self) -> DynZipper;
+    async fn child(self, index: usize) -> DynZipper;
 
-    async fn move_left(self) -> Box<dyn Zipper + Send>;
-    async fn move_right(self) -> Box<dyn Zipper + Send>;
+    async fn move_left(self) -> DynZipper;
+    async fn move_right(self) -> DynZipper;
 }
 
 #[derive(Clone)]
@@ -168,32 +170,32 @@ impl CharZipper {
 
 #[async_trait]
 impl Zipper for RootZipper {
-    async fn parent(self) -> Box<dyn Zipper + Send> {
+    async fn parent(self) -> DynZipper {
         Box::new(self)
     }
-    async fn child(self, index: usize) -> Box<dyn Zipper + Send> {
+    async fn child(self, index: usize) -> DynZipper {
         let the_kids = self.children.clone();
         let index = min(index, the_kids.len());
         Box::new(WindowZipper::new(index, Left(self)).await)
     }
 
-    async fn move_left(self) -> Box<dyn Zipper + Send> {
+    async fn move_left(self) -> DynZipper {
         Box::new(self)
     }
-    async fn move_right(self) -> Box<dyn Zipper + Send> {
+    async fn move_right(self) -> DynZipper {
         Box::new(self)
     }
 }
 
 #[async_trait]
 impl Zipper for WindowZipper {
-    async fn parent(self) -> Box<dyn Zipper + Send> {
+    async fn parent(self) -> DynZipper {
         match *self.parent {
-            Left(rz) => Box::new(rz) as Box<dyn Zipper + Send>,
-            Right(wz) => Box::new(wz) as Box<dyn Zipper + Send>,
+            Left(rz) => Box::new(rz) as DynZipper,
+            Right(wz) => Box::new(wz) as DynZipper,
         }
     }
-    async fn child(self, index: usize) -> Box<dyn Zipper + Send> {
+    async fn child(self, index: usize) -> DynZipper {
         let the_kids = self.children.clone();
         let len = the_kids.len();
         if len == 0 { return Box::new(self) }
@@ -204,14 +206,14 @@ impl Zipper for WindowZipper {
         }
     }
 
-    async fn move_left(self) -> Box<dyn Zipper + Send> {
+    async fn move_left(self) -> DynZipper {
         let index = self.left.len();
         if index == 0 { return Box::new(self) }
         let parent = *self.parent;
 
         for_both!(parent, p => p.child(index - 1).await)
     }
-    async fn move_right(self) -> Box<dyn Zipper + Send> {
+    async fn move_right(self) -> DynZipper {
         let index = self.left.len();
         if self.right.len() == 0 { return Box::new(self) }
         let parent = *self.parent;
@@ -222,22 +224,22 @@ impl Zipper for WindowZipper {
 
 #[async_trait]
 impl Zipper for TextZipper {
-    async fn parent(self) -> Box<dyn Zipper + Send> {
+    async fn parent(self) -> DynZipper {
         Box::new(self.parent)
     }
-    async fn child(self, index: usize) -> Box<dyn Zipper + Send> {
+    async fn child(self, index: usize) -> DynZipper {
         let the_kids = self.children.clone();
         let index = min(index, the_kids.len());
         Box::new(LineZipper::new(index, self).await)
     }
 
-    async fn move_left(self) -> Box<dyn Zipper + Send> {
+    async fn move_left(self) -> DynZipper {
         let index = self.left.len();
         if index == 0 { return Box::new(self) }
 
         self.parent.child(index - 1).await
     }
-    async fn move_right(self) -> Box<dyn Zipper + Send> {
+    async fn move_right(self) -> DynZipper {
         let index = self.left.len();
         if self.right.len() == 0 { return Box::new(self) }
 
@@ -247,22 +249,22 @@ impl Zipper for TextZipper {
 
 #[async_trait]
 impl Zipper for LineZipper {
-    async fn parent(self) -> Box<dyn Zipper + Send> {
+    async fn parent(self) -> DynZipper {
         Box::new(self.parent)
     }
-    async fn child(self, index: usize) -> Box<dyn Zipper + Send> {
+    async fn child(self, index: usize) -> DynZipper {
         let the_kids = self.children.clone();
         let index = min(index, the_kids.len());
         Box::new(SpanZipper::new(index, self).await)
     }
 
-    async fn move_left(self) -> Box<dyn Zipper + Send> {
+    async fn move_left(self) -> DynZipper {
         let index = self.left.len();
         if index == 0 { return Box::new(self) }
 
         self.parent.child(index - 1).await
     }
-    async fn move_right(self) -> Box<dyn Zipper + Send> {
+    async fn move_right(self) -> DynZipper {
         let index = self.left.len();
         if self.right.len() == 0 { return Box::new(self) }
 
@@ -272,22 +274,22 @@ impl Zipper for LineZipper {
 
 #[async_trait]
 impl Zipper for SpanZipper {
-    async fn parent(self) -> Box<dyn Zipper + Send> {
+    async fn parent(self) -> DynZipper {
         Box::new(self.parent)
     }
-    async fn child(self, index: usize) -> Box<dyn Zipper + Send> {
+    async fn child(self, index: usize) -> DynZipper {
         let the_kids = self.children.clone();
         let index = min(index, the_kids.len());
         Box::new(CharZipper::new(index, self).await)
     }
 
-    async fn move_left(self) -> Box<dyn Zipper + Send> {
+    async fn move_left(self) -> DynZipper {
         let index = self.left.len();
         if index == 0 { return Box::new(self) }
 
         self.parent.child(index - 1).await
     }
-    async fn move_right(self) -> Box<dyn Zipper + Send> {
+    async fn move_right(self) -> DynZipper {
         let index = self.left.len();
         if self.right.len() == 0 { return Box::new(self) }
 
@@ -296,21 +298,21 @@ impl Zipper for SpanZipper {
 }
 #[async_trait]
 impl Zipper for CharZipper {
-    async fn parent(self) -> Box<dyn Zipper + Send> {
+    async fn parent(self) -> DynZipper {
         Box::new(self.parent)
     }
-    async fn child(self, index: usize) -> Box<dyn Zipper + Send> {
+    async fn child(self, index: usize) -> DynZipper {
         let _ = index;
         Box::new(self)
     }
 
-    async fn move_left(self) -> Box<dyn Zipper + Send> {
+    async fn move_left(self) -> DynZipper {
         let index = self.left.len();
         if index == 0 { return Box::new(self) }
 
         self.parent.child(index - 1).await
     }
-    async fn move_right(self) -> Box<dyn Zipper + Send> {
+    async fn move_right(self) -> DynZipper {
         let index = self.left.len();
         if self.right.len() == 0 { return Box::new(self) }
 

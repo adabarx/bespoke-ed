@@ -39,6 +39,7 @@ pub struct Line {
 
 #[derive(Default, Clone)]
 pub struct Text {
+    pub top: usize,
     pub lines: Vec<ARW<Line>>,
     pub style: Style,
     pub alignment: Option<Alignment>,

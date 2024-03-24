@@ -5,8 +5,7 @@ use std::sync::Arc;
 use std::fs;
 
 use either::Either::Right;
-use input::handle_insert;
-use input::handle_normal;
+use input::{handle_insert, handle_normal};
 use primatives::Root;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
@@ -22,11 +21,10 @@ mod flipflop;
 mod input;
 
 use primatives::{Window, WindowRender, SplitDirection, Text, AsyncWidget};
+use zipper::DynZipper;
 use zipper::RootZipper;
 use tokio::time::{sleep, Instant, Duration};
 use zipper::Zipper;
-
-use crate::input::handle_events_old;
 
 const BILLY: u64 = 1_000_000_000;
 const FPS_LIMIT: u64 = 60;
@@ -79,7 +77,7 @@ async fn main() -> Result<()> {
 
     //
     // input thread:
-    //     1. handles all input from the terminal
+    //     1. polls input from the terminal
     //     2. converts them into commands
     //     3. sends the commands to the control thread
     //
@@ -88,6 +86,8 @@ async fn main() -> Result<()> {
         let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
         let mut last_tick = Instant::now();
         loop {
+            if *state.read().await == State::ShutDown { break }
+
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
             if crossterm::event::poll(timeout).unwrap() {
                 // if let Some(msg) = handle_events_old(
@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
                 let msg = match *state.read().await {
                     State::Normal => handle_normal(mod_keys, event).await,
                     State::Insert => handle_insert(mod_keys, event).await,
-                    State::ShutDown => break,
+                    State::ShutDown => Some(Msg::ShutDown),
                 };
                 if let Some(msg) = msg {
                     input_tx.send(msg).unwrap();
@@ -119,24 +119,22 @@ async fn main() -> Result<()> {
     //
 
     tokio::spawn(async move {
-        let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
-        let mut last_tick = Instant::now();
+        let _zipper: DynZipper = Box::new(RootZipper::new(root).await);
 
-        let _zipper = Box::new(RootZipper::new(root).await) as Box<dyn Zipper + Send>;
-
-        'main: loop {
-            // handle input
-            while let Ok(_msg) = input_rx.try_recv() {
-                // execute user commands
-                match *state.read().await {
-                    State::Normal => (),
-                    State::Insert => (),
-                    State::ShutDown => break 'main,
-                }
+        while let Some(msg) = input_rx.recv().await {
+            match msg {
+                Msg::Normal(_) => todo!(),
+                Msg::Insert(_) => todo!(),
+                Msg::NormalMode => todo!(),
+                Msg::ToFirstChild => todo!(),
+                Msg::ToParent => todo!(),
+                Msg::ToLeftSibling => todo!(),
+                Msg::ToRightSibling => todo!(),
+                Msg::Reset => todo!(),
+                Msg::ShutDown => todo!(),
             }
-
-            last_tick = timeout_sleep(tick_rate, last_tick).await;
         }
+
     });
 
     //
