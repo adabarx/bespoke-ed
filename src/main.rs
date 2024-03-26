@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::fs;
 
 use either::Either::Right;
+use input::handle_travel;
 use input::{handle_insert, handle_normal};
 use primatives::Root;
 use tokio::sync::mpsc;
@@ -24,7 +25,6 @@ use primatives::{Window, WindowRender, SplitDirection, Text, AsyncWidget};
 use zipper::DynZipper;
 use zipper::RootZipper;
 use tokio::time::{sleep, Instant, Duration};
-use zipper::Zipper;
 
 const BILLY: u64 = 1_000_000_000;
 const FPS_LIMIT: u64 = 60;
@@ -41,6 +41,7 @@ enum State {
     #[default]
     Normal,
     Insert,
+    Travel,
     ShutDown,
 }
 
@@ -49,7 +50,6 @@ pub async fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
     if !timeout.is_zero() { sleep(timeout).await; }
     Instant::now()
 }
-
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -101,7 +101,8 @@ async fn main() -> Result<()> {
                 let msg = match *state.read().await {
                     State::Normal => handle_normal(mod_keys, event).await,
                     State::Insert => handle_insert(mod_keys, event).await,
-                    State::ShutDown => Some(Msg::ShutDown),
+                    State::Travel => handle_travel(mod_keys, event).await,
+                    State::ShutDown => break,
                 };
                 if let Some(msg) = msg {
                     input_tx.send(msg).unwrap();
@@ -119,19 +120,26 @@ async fn main() -> Result<()> {
     //
 
     tokio::spawn(async move {
-        let _zipper: DynZipper = Box::new(RootZipper::new(root).await);
+        let mut zipper: DynZipper = Box::new(RootZipper::new(root).await);
 
         while let Some(msg) = input_rx.recv().await {
             match msg {
-                Msg::Normal(_) => todo!(),
                 Msg::Insert(_) => todo!(),
-                Msg::NormalMode => todo!(),
-                Msg::ToFirstChild => todo!(),
-                Msg::ToParent => todo!(),
-                Msg::ToLeftSibling => todo!(),
-                Msg::ToRightSibling => todo!(),
+                Msg::NormalMode => *state.write().await = State::Normal,
+                Msg::InsertMode => *state.write().await = State::Insert,
+                Msg::TravelMode => *state.write().await = State::Travel,
+                Msg::ToFirstChild => zipper = zipper.child(0).await,
+                Msg::ToParent => zipper = zipper.parent().await,
+                Msg::ToLeftSibling => zipper = zipper.move_left().await,
+                Msg::ToRightSibling => zipper = zipper.move_right().await,
                 Msg::Reset => todo!(),
                 Msg::ShutDown => todo!(),
+                Msg::PrevChar => todo!(),
+                Msg::PrevLine => todo!(),
+                Msg::NextLine => todo!(),
+                Msg::NextChar => todo!(),
+                Msg::ToLastChild => todo!(),
+                Msg::ToMiddleChild => todo!(),
             }
         }
 

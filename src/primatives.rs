@@ -53,15 +53,17 @@ pub enum SplitDirection {
 
 #[derive(Clone)]
 pub struct Root {
+    pub area: Rect,
     pub style: Style,
     pub split_dir: SplitDirection,
     pub children: Vec<ARW<Window>>,
 }
 
 impl Root {
-    pub fn new(split_dir: SplitDirection) -> Self {
+    pub fn new(split_dir: SplitDirection, area: Rect) -> Self {
         Self {
             split_dir,
+            area,
             children: Vec::new(),
             style: Style::default()
         }
@@ -268,8 +270,10 @@ impl AsyncWidget for ARW<Text> {
         lines.sort_by(|a, b| a.0.cmp(&b.0));
 
         TextRender { 
+            top: self.read().await.top.clone(),
             lines: lines.into_iter().map(|(_, render)| render).collect(),
-            ..Default::default()
+            style: self.read().await.style.clone(),
+            alignment: self.read().await.alignment.clone(),
         }
     }
     async fn highlight(&mut self) {
@@ -373,6 +377,7 @@ pub struct LineRender {
 
 #[derive(Default)]
 pub struct TextRender {
+    pub top: usize,
     pub lines: Vec<LineRender>,
     pub style: Style,
     pub alignment: Option<Alignment>,
@@ -441,7 +446,7 @@ impl WidgetRef for WindowRender {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         buf.set_style(area, self.style);
         let windows: u16 = self.children.len().try_into().unwrap();
-        if windows == 0 { return (); }
+        if windows == 0 { return; }
         match self.split_dir {
             SplitDirection::Horizontal => {
                 // split is horizontal. nested containers are stacked vertically
@@ -476,11 +481,15 @@ impl WidgetRef for WindowRender {
 impl WidgetRef for TextRender {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
-        let mut line_number: u16 = 0;
-        for line in self.lines.iter() {
+        let mut line_number: usize = self.top;
+        let mut i = 0;
+        loop {
+            let line = self.lines.get(line_number);
+            if line.is_none() { break }
+            let line = line.unwrap();
             let area = Rect {
                 x: area.x,
-                y: area.y + line_number,
+                y: area.y + i,
                 width: line.spans
                     .iter()
                     .fold(0_u16, |acc, sp| acc + sp.characters.len() as u16),
@@ -488,6 +497,7 @@ impl WidgetRef for TextRender {
             };
             line.render_ref(area, buf);
             line_number += 1;
+            i += 1;
         }
     }
 }
