@@ -1,10 +1,15 @@
+#![allow(dead_code)]
 use std::path::PathBuf;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::{Instant, Duration};
 use std::fs;
 
-use tokio::sync::{mpsc, RwLock};
+use either::Either::Right;
+use input::handle_travel;
+use input::{handle_insert, handle_normal};
+use primatives::Root;
+use tokio::sync::mpsc;
+use tokio::sync::RwLock;
 use clap::Parser;
 use crossterm::event::{self, ModifierKeyCode};
 use anyhow::Result;
@@ -16,11 +21,10 @@ mod zipper;
 mod flipflop;
 mod input;
 
-use primatives::{AsyncWidget, Text, Window, WindowRender};
-use tokio::time::sleep;
+use primatives::{Window, WindowRender, SplitDirection, Text, AsyncWidget};
+use zipper::DynZipper;
 use zipper::RootZipper;
-
-use crate::input::handle_events;
+use tokio::time::{sleep, Instant, Duration};
 
 const BILLIE: u64 = 1_000_000_000;
 const FPS_LIMIT: u64 = 60;
@@ -37,8 +41,10 @@ enum State {
     #[default]
     Normal,
     Insert,
+    Travel,
     ShutDown,
 }
+
 pub async fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
     let timeout = tick_rate.saturating_sub(last_tick.elapsed());
     if !timeout.is_zero() { sleep(timeout).await; }
@@ -52,15 +58,17 @@ async fn main() -> Result<()> {
     let path = CLI::parse().path.expect("File Required");
     let content = fs::read_to_string(path.clone()).expect("File Doesn't Exist");
 
-    // set up global model
     let state: &'static RwLock<State> = Box::leak(Box::new(RwLock::new(State::Normal)));
     let mod_keys: &'static RwLock<Vec<ModifierKeyCode>> = Box::leak(Box::new(RwLock::new(Vec::new())));
-    let root_layout: &'static RwLock<Window> = Box::leak(Box::new(
-        RwLock::new(Window {
-            windows: vec![Arc::new(RwLock::new(Text::raw(content)))],
-            ..Default::default()
-        })
+    let root: &'static RwLock<Root> = Box::leak(Box::new(
+        RwLock::new(Root::new(SplitDirection::Vertical))
     ));
+    root.write().await.children.push(
+        Arc::new(RwLock::new(Window::new(SplitDirection::Vertical)))
+    );
+    root.write().await.children[0].write().await.children.push(
+        Right(Arc::new(RwLock::new(Text::raw(content))))
+    );
 
     let mut terminal = tui::init_app()?;
 
@@ -69,7 +77,7 @@ async fn main() -> Result<()> {
 
     //
     // input thread:
-    //     1. handles all input from the terminal
+    //     1. polls input from the terminal
     //     2. converts them into commands
     //     3. sends the commands to the control thread
     //
@@ -82,7 +90,21 @@ async fn main() -> Result<()> {
 
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
             if crossterm::event::poll(timeout).unwrap() {
-                if let Some(msg) = handle_events(mod_keys, state, event::read().unwrap()) {
+                // if let Some(msg) = handle_events_old(
+                //     mod_keys,
+                //     state,
+                //     event::read().unwrap()
+                // ).await {
+                //     input_tx.send(msg).unwrap();
+                // }
+                let event = event::read().unwrap();
+                let msg = match *state.read().await {
+                    State::Normal => handle_normal(mod_keys, event).await,
+                    State::Insert => handle_insert(mod_keys, event).await,
+                    State::Travel => handle_travel(mod_keys, event).await,
+                    State::ShutDown => break,
+                };
+                if let Some(msg) = msg {
                     input_tx.send(msg).unwrap();
                 }
                 last_tick = Instant::now();
@@ -99,20 +121,29 @@ async fn main() -> Result<()> {
     //
 
     tokio::spawn(async move {
-        let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
-        let mut last_tick = Instant::now();
+        let mut zipper: DynZipper = Box::new(RootZipper::new(root).await);
 
-        let mut zipper = RootZipper::init(root_layout.clone()).await;
-        loop {
-            if *state.read().await == State::ShutDown { break }
-
-            // handle input
-            while let Ok(msg) = input_rx.try_recv() {
-                // zipper = update(state, zipper, msg).await;
+        while let Some(msg) = input_rx.recv().await {
+            match msg {
+                Msg::Insert(_) => todo!(),
+                Msg::NormalMode => *state.write().await = State::Normal,
+                Msg::InsertMode => *state.write().await = State::Insert,
+                Msg::TravelMode => *state.write().await = State::Travel,
+                Msg::ToFirstChild => zipper = zipper.child(0).await,
+                Msg::ToParent => zipper = zipper.parent().await,
+                Msg::ToLeftSibling => zipper = zipper.move_left().await,
+                Msg::ToRightSibling => zipper = zipper.move_right().await,
+                Msg::Reset => todo!(),
+                Msg::ShutDown => todo!(),
+                Msg::PrevChar => todo!(),
+                Msg::PrevLine => todo!(),
+                Msg::NextLine => todo!(),
+                Msg::NextChar => todo!(),
+                Msg::ToLastChild => todo!(),
+                Msg::ToMiddleChild => todo!(),
             }
-
-            last_tick = timeout_sleep(tick_rate, last_tick).await;
         }
+
     });
 
     //
@@ -128,7 +159,7 @@ async fn main() -> Result<()> {
         loop {
             if *state.read().await == State::ShutDown { break }
             
-            render_tx.send(root_layout.read().await.async_render().await).unwrap();
+            render_tx.send(root.async_render().await).unwrap();
 
             last_tick = timeout_sleep(tick_rate, last_tick).await;
         }
@@ -141,8 +172,16 @@ async fn main() -> Result<()> {
     //     2. draws the render to the terminal
     //
 
+    // let mut fps_tick = Instant::now();
+    // let mut fps = 0_f64;
     while let Some(render) = render_rx.recv().await {
         terminal.draw(|frame| frame.render_widget_ref(render, frame.size()))?;
+
+        // rudimentary debug stuff
+        //
+        // let tick = Instant::now();
+        // fps = 1_f64 / tick.duration_since(fps_tick).as_secs_f64();
+        // fps_tick = tick;
     }
 
     tui::teardown_app()

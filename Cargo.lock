@@ -131,6 +131,7 @@ dependencies = [
  "crossbeam-channel",
  "crossterm",
  "dyn-clone",
+ "either",
  "ratatui",
  "tokio",
 ]

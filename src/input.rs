@@ -1,115 +1,117 @@
-
-use std::sync::RwLock;
-
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
+use tokio::sync::RwLock;
 
 use crate::{primatives::Char, State};
 
-#[derive(PartialEq, Eq)]
-pub enum NormalCommand {
-    Quit,
-    InsertMode,
-    InsertModeAfterCursor,
-    NextChar,
-    PrevChar,
-    NextLine,
-    PrevLine,
-}
-
-#[derive(PartialEq, Eq)]
-pub enum InsertCommand {
-    Insert(Char),
-    Replace(Char),
-    Delete,
-    Backspace,
-    NewLine,
-    NewLineBefore,
-    Normal,
-}
+// pub async fn input_listener(
+//     mod_keys: &'static RwLock<Vec<ModifierKeyCode>>,
+//     state: &'static RwLock<State>,
+//     input_tx: UnboundedSender<Msg>,
+//     tick_rate: Duration,
+// ) -> Result<()> {
+//     let mut last_tick = Instant::now();
+//     loop {
+//         if *state.read().await == State::ShutDown { break }
+//
+//         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+//         if crossterm::event::poll(timeout)? {
+//             if let Some(msg) = handle_events_old(mod_keys, state, event::read()?).await {
+//                 input_tx.send(msg)?;
+//             }
+//             last_tick = Instant::now();
+//         }
+//     };
+//     Ok(())
+// }
 
 #[derive(PartialEq, Eq)]
 pub enum Msg {
-    Normal(NormalCommand),
-    Insert(InsertCommand),
+    Insert(char),
     NormalMode,
-    ShutDown
+    InsertMode,
+    TravelMode,
+    ToFirstChild,
+    ToParent,
+    ToLeftSibling,
+    ToRightSibling,
+    Reset,
+    ShutDown,
+    PrevChar,
+    PrevLine,
+    NextLine,
+    NextChar,
+    ToLastChild,
+    ToMiddleChild,
 }
 
-pub fn handle_events(
+pub async fn handle_normal(
     mod_keys: &'static RwLock<Vec<ModifierKeyCode>>,
-    app_state: &'static RwLock<State>,
     input: Event
 ) -> Option<Msg> {
+    // let shift = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftShift || *k == ModifierKeyCode::RightShift).is_some();
+    let ctrl = mod_keys.read().await.iter()
+        .find(|&k| *k == ModifierKeyCode::LeftControl || *k == ModifierKeyCode::RightControl)
+        .is_some();
+    // let alt = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftAlt || *k == ModifierKeyCode::RightAlt).is_some();
+    // let meta = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftMeta || *k == ModifierKeyCode::RightMeta).is_some();
+    // let super_ = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftSuper || *k == ModifierKeyCode::RightSuper).is_some();
+    // let hyper = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftHyper || *k == ModifierKeyCode::RightHyper).is_some();
     match input {
         Event::Key(key) => match key.code {
-            KeyCode::Esc => Some(Msg::NormalMode),
-            _ => handle_keys(mod_keys, app_state, key),
+            KeyCode::Char('i') => Some(Msg::InsertMode),
+            KeyCode::Char('t') if ctrl => Some(Msg::TravelMode),
+            KeyCode::Char('h') => Some(Msg::PrevChar),
+            KeyCode::Char('j') => Some(Msg::PrevLine),
+            KeyCode::Char('k') => Some(Msg::NextLine),
+            KeyCode::Char('l') => Some(Msg::NextChar),
+            _ => None,
         },
         _ => None,
     }
 }
 
-pub fn handle_keys(
+pub async fn handle_insert(
     mod_keys: &'static RwLock<Vec<ModifierKeyCode>>,
-    app_state: &'static RwLock<State>,
-    key: KeyEvent
+    input: Event
 ) -> Option<Msg> {
-    match key.kind {
-        KeyEventKind::Press => match key.code {
-            KeyCode::Modifier(mod_key) =>
-                mod_keys
-                    .write().unwrap()
-                    .push(mod_key),
-            _ => (),
-        }
-        KeyEventKind::Release => match key.code {
-            KeyCode::Modifier(mod_key) =>
-                mod_keys
-                    .write().unwrap()
-                    .retain(|k| *k == mod_key),
-            _ => (),
-        }
-        _ => ()
-    }
-    match app_state.read().unwrap().clone() {
-        State::Normal => Some(Msg::Normal(handle_normal(mod_keys, key)?)),
-        State::Insert => Some(Msg::Insert(handle_insert(mod_keys, key)?)),
-        State::ShutDown => Some(Msg::ShutDown),
-    }
-}
+    let ctrl = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftControl || *k == ModifierKeyCode::RightControl).is_some();
+    match input {
+        Event::Key(key) => match key.code {
+            KeyCode::Esc => Some(Msg::NormalMode),
 
-fn handle_normal(_mod_keys: &'static RwLock<Vec<ModifierKeyCode>>, key: KeyEvent) -> Option<NormalCommand> {
-    match key.kind {
-        KeyEventKind::Press => match key.code {
-            KeyCode::Char('h') => Some(NormalCommand::PrevChar),
-            KeyCode::Char('j') => Some(NormalCommand::PrevLine),
-            KeyCode::Char('k') => Some(NormalCommand::NextLine),
-            KeyCode::Char('l') => Some(NormalCommand::NextChar),
-            KeyCode::Char('q') => Some(NormalCommand::Quit),
+            KeyCode::Char('t') if ctrl => Some(Msg::TravelMode),
+            KeyCode::Char('h') if ctrl => Some(Msg::PrevChar),
+            KeyCode::Char('j') if ctrl => Some(Msg::PrevLine),
+            KeyCode::Char('k') if ctrl => Some(Msg::NextLine),
+            KeyCode::Char('l') if ctrl => Some(Msg::NextChar),
+
+            KeyCode::Char(ch) => Some(Msg::Insert(ch)),
             _ => None,
         },
-        KeyEventKind::Repeat => None,
-        KeyEventKind::Release => None,
+        _ => None,
     }
 }
 
-fn handle_insert(mod_keys: &'static RwLock<Vec<ModifierKeyCode>>, key: KeyEvent) -> Option<InsertCommand> {
-    let ctrl = mod_keys.read().unwrap()
-        .iter()
-        .find(|&k| if let ModifierKeyCode::LeftControl = *k { true } else { false })
-        .is_some();
+pub async fn handle_travel(
+    mod_keys: &'static RwLock<Vec<ModifierKeyCode>>,
+    input: Event
+) -> Option<Msg> {
+    let ctrl = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftControl || *k == ModifierKeyCode::RightControl).is_some();
+    match input {
+        Event::Key(key) => match key.code {
+            KeyCode::Esc => Some(Msg::NormalMode),
 
-    match key.kind {
-        KeyEventKind::Press => match key.code  {
-            KeyCode::Char(char) =>
-                Some(InsertCommand::Insert(Char { char, ..Default::default() })),
-            KeyCode::Backspace => Some(InsertCommand::Backspace),
-            KeyCode::Delete => Some(InsertCommand::Delete),
-            KeyCode::Enter if ctrl  => Some(InsertCommand::NewLineBefore),
-            KeyCode::Enter if !ctrl => Some(InsertCommand::NewLine),
+            KeyCode::Char('i') if ctrl => Some(Msg::ToFirstChild),
+            KeyCode::Char('p') => Some(Msg::ToParent),
+            KeyCode::Char('l') => Some(Msg::ToLeftSibling),
+            KeyCode::Char('r') => Some(Msg::ToRightSibling),
+            KeyCode::Char('i') => Some(Msg::ToFirstChild),
+            KeyCode::Char('a') => Some(Msg::ToLastChild),
+            KeyCode::Char('m') => Some(Msg::ToMiddleChild),
+
             _ => None,
-        }
-       _ => None,
+        },
+        _ => None,
     }
 }
 

@@ -12,5 +12,6 @@ clap = { version = "4.5.1", features = ["derive"] }
 crossbeam-channel = "0.5.11"
 crossterm = "0.27.0"
 dyn-clone = "1.0.17"
+either = "1.10.0"
 ratatui = { version = "0.26.1", features = ["serde", "unstable-widget-ref"] }
 tokio = { version = "1.36.0", features = ["full"] }
