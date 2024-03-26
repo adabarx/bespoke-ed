@@ -19,6 +19,42 @@ pub trait AsyncWidget {
     async fn no_highlight(&mut self);
 }
 
+#[async_trait]
+pub trait ParentWidget<T>
+where
+    T: AsyncWidget + ?Sized + 'static + Send + Sync
+{
+    async fn get_children(&self) -> Vec<ARW<T>>;
+}
+
+pub trait Render: WidgetRef + Send {
+    fn get_width_height(&self) -> (u16, u16);
+}
+
+pub trait WindowChild {}
+
+impl WindowChild for Window {}
+impl WindowChild for Text {}
+
+impl ParentWidget<Char> for Span {
+    async fn get_children(&self) -> Vec<ARW<Char>> {
+        self.characters.clone()
+    }
+}
+
+impl ParentWidget<Span> for Line {
+    async fn get_children(&self) -> Vec<ARW<Span>> {
+        self.spans.clone()
+    }
+}
+
+impl ParentWidget<Line> for Text {
+    async fn get_children(&self) -> Vec<ARW<Line>> {
+        self.lines.clone()
+    }
+}
+
+
 #[derive(Default, Clone, PartialEq, Eq)]
 pub struct Char {
     pub char: char,
@@ -45,8 +81,9 @@ pub struct Text {
     pub alignment: Option<Alignment>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Default)]
 pub enum SplitDirection {
+    #[default]
     Vertical,
     Horizontal,
 }
@@ -212,10 +249,11 @@ impl AsyncWidget for ARW<Span> {
         }
         characters.sort_by(|a, b| a.0.cmp(&b.0));
 
-        SpanRender {
+        Box::new(SpanRender {
             characters: characters.into_iter().map(|(_, render)| render).collect(),
+            style: self.style,
             ..Default::default()
-        }
+        })
     }
     async fn highlight(&mut self) {
         let mut wg = self.write().await;
@@ -240,10 +278,11 @@ impl AsyncWidget for ARW<Line> {
         }
         spans.sort_by(|a, b| a.0.cmp(&b.0));
 
-        LineRender {
+        Box::new(LineRender {
             spans: spans.into_iter().map(|(_, render)| render).collect(),
+            style: self.style,
             ..Default::default()
-        }
+        })
     }
 
     async fn highlight(&mut self) {
@@ -263,6 +302,7 @@ impl AsyncWidget for ARW<Text> {
         for (i, line) in self.read().await.lines.iter().cloned().enumerate() {
             set.spawn(async move { (i, line.async_render().await) });
         }
+
         let mut lines = Vec::new();
         while let Some(Ok(line)) = set.join_next().await {
             lines.push(line);
@@ -363,14 +403,14 @@ pub enum LayoutTypeRender {
 
 #[derive(Default)]
 pub struct SpanRender {
-    pub characters: Vec<Char>,
+    pub characters: Vec<DynRender>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
 
 #[derive(Default)]
 pub struct LineRender {
-    pub spans: Vec<SpanRender>,
+    pub spans: Vec<DynRender>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
@@ -396,6 +436,12 @@ impl WidgetRef for Char {
     }
 }
 
+impl Render for Char {
+    fn get_width_height(&self) -> (u16, u16) {
+        (1, 1)
+    }
+}
+
 impl WidgetRef for SpanRender {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
@@ -418,6 +464,12 @@ impl WidgetRef for SpanRender {
     }
 }
 
+impl Render for SpanRender {
+    fn get_width_height(&self) -> (u16, u16) {
+        (self.characters.len() as u16, 1)
+    }
+}
+
 impl WidgetRef for LineRender {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
@@ -430,14 +482,15 @@ impl WidgetRef for LineRender {
         buf.set_style(area, self.style);
         let mut offset: u16 = 0;
         for span in self.spans.iter() {
+            let (width, height) = span.get_width_height();
             let area = Rect {
                 x: area.x + offset,
                 y: area.y,
-                width: span.characters.len() as u16,
-                height: 1,
+                width,
+                height,
             };
             span.render_ref(area, buf);
-            offset += span.characters.iter().count() as u16;
+            offset += width;
         }
     }
 }
@@ -458,7 +511,7 @@ impl WidgetRef for WindowRender {
                         area.width,
                         offset
                     );
-                    for_both!(child, c => c.render_ref(area, buf))
+                    for_both!(child, c => c.render_ref(area, buf)
                 }
             },
             SplitDirection::Vertical => {

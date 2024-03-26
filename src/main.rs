@@ -26,10 +26,10 @@ use zipper::DynZipper;
 use zipper::RootZipper;
 use tokio::time::{sleep, Instant, Duration};
 
-const BILLY: u64 = 1_000_000_000;
+const BILLIE: u64 = 1_000_000_000;
 const FPS_LIMIT: u64 = 60;
-const RENDER_DEADLINE: u64 = BILLY / FPS_LIMIT;
-const CONTROL_DEADLINE: u64 = BILLY / (FPS_LIMIT * 2);
+const RENDER_DEADLINE: u64 = BILLIE / FPS_LIMIT;
+const CONTROL_DEADLINE: u64 = BILLIE / (FPS_LIMIT * 2);
 
 type ARW<T> = Arc<RwLock<T>>;
 
@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
                 last_tick = Instant::now();
             }
         };
+        Ok(())
     });
 
     //
