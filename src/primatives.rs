@@ -4,10 +4,7 @@ use async_trait::async_trait;
 use either::*;
 use tokio::{sync::RwLock, task::JoinSet};
 use ratatui::{
-    widgets::WidgetRef,
-    buffer::Buffer,
-    layout::{Alignment, Rect},
-    style::{Color, Style},
+    buffer::Buffer, layout::{Alignment, Position, Rect}, style::{Color, Style}, widgets::WidgetRef
 };
 
 use crate::ARW;
@@ -411,12 +408,15 @@ impl WidgetRef for SpanRender {
         buf.set_style(area, self.style);
         let mut i: u16 = 0;
         for ch in self.characters.iter() {
-            let area = Rect {
+            let char_area = Rect {
                 x: area.x + i,
                 width: 1,
                 ..area
             };
-            ch.render_ref(area, buf);
+            if !area.contains(Position::new(char_area.x, char_area.y)) {
+                break
+            }
+            ch.render_ref(char_area, buf);
             i += 1;
         }
     }
@@ -489,6 +489,7 @@ impl WidgetRef for TextRender {
         let mut line_number: usize = self.top;
         let mut i = 0;
         loop {
+            if i == area.height { break }
             let line = self.lines.get(line_number);
             if line.is_none() { break }
             let line = line.unwrap();

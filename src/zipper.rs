@@ -15,9 +15,7 @@ pub type DynZipper = Box<dyn Zipper + Send + Sync>;
 pub trait Zipper {
     // async fn insert(&mut self, char: char) -> DynZipper;
     // async fn delete(&mut self);
-    async fn highlight(&self, hl: bool) {
-        let _ = hl;
-    }
+    async fn highlight(&self, hl: bool) { let _ = hl; }
 
     async fn parent(&self) -> DynZipper;
     async fn child(&self, index: usize) -> DynZipper;
