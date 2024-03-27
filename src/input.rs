@@ -49,17 +49,18 @@ pub async fn handle_normal(
     input: Event
 ) -> Option<Msg> {
     // let shift = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftShift || *k == ModifierKeyCode::RightShift).is_some();
-    let ctrl = mod_keys.read().await.iter()
-        .find(|&k| *k == ModifierKeyCode::LeftControl || *k == ModifierKeyCode::RightControl)
-        .is_some();
+    // let ctrl = mod_keys.read().await.iter()
+    //     .find(|&k| *k == ModifierKeyCode::LeftControl || *k == ModifierKeyCode::RightControl)
+    //     .is_some();
     // let alt = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftAlt || *k == ModifierKeyCode::RightAlt).is_some();
     // let meta = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftMeta || *k == ModifierKeyCode::RightMeta).is_some();
     // let super_ = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftSuper || *k == ModifierKeyCode::RightSuper).is_some();
     // let hyper = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftHyper || *k == ModifierKeyCode::RightHyper).is_some();
     match input {
         Event::Key(key) => match key.code {
+            KeyCode::Esc => Some(Msg::ShutDown),
             KeyCode::Char('i') => Some(Msg::InsertMode),
-            KeyCode::Char('t') if ctrl => Some(Msg::TravelMode),
+            KeyCode::Char('t') => Some(Msg::TravelMode),
             KeyCode::Char('h') => Some(Msg::PrevChar),
             KeyCode::Char('j') => Some(Msg::PrevLine),
             KeyCode::Char('k') => Some(Msg::NextLine),

@@ -8,10 +8,11 @@ use either::Either::Right;
 use input::handle_travel;
 use input::{handle_insert, handle_normal};
 use primatives::Root;
+use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use clap::Parser;
-use crossterm::event::{self, ModifierKeyCode};
+use crossterm::event::{self, Event, ModifierKeyCode};
 use anyhow::Result;
 use input::Msg;
 
@@ -55,13 +56,15 @@ pub async fn timeout_sleep(tick_rate: Duration, last_tick: Instant) -> Instant {
 async fn main() -> Result<()> {
     tui::install_panic_hook();
 
+    let mut terminal = tui::init_app()?;
+
     let path = CLI::parse().path.expect("File Required");
     let content = fs::read_to_string(path.clone()).expect("File Doesn't Exist");
 
     let state: &'static RwLock<State> = Box::leak(Box::new(RwLock::new(State::Normal)));
     let mod_keys: &'static RwLock<Vec<ModifierKeyCode>> = Box::leak(Box::new(RwLock::new(Vec::new())));
     let root: &'static RwLock<Root> = Box::leak(Box::new(
-        RwLock::new(Root::new(SplitDirection::Vertical))
+        RwLock::new(Root::new(SplitDirection::Vertical, terminal.get_frame().size()))
     ));
     root.write().await.children.push(
         Arc::new(RwLock::new(Window::new(SplitDirection::Vertical)))
@@ -69,8 +72,6 @@ async fn main() -> Result<()> {
     root.write().await.children[0].write().await.children.push(
         Right(Arc::new(RwLock::new(Text::raw(content))))
     );
-
-    let mut terminal = tui::init_app()?;
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Msg>();
     let (render_tx, mut render_rx) = mpsc::unbounded_channel::<WindowRender>();
@@ -90,14 +91,15 @@ async fn main() -> Result<()> {
 
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
             if crossterm::event::poll(timeout).unwrap() {
-                // if let Some(msg) = handle_events_old(
-                //     mod_keys,
-                //     state,
-                //     event::read().unwrap()
-                // ).await {
-                //     input_tx.send(msg).unwrap();
-                // }
                 let event = event::read().unwrap();
+                
+                match event {
+                    Event::FocusLost => (),
+                    Event::FocusGained => (),
+                    Event::Resize(columns, rows) => root.write().await.area = Rect::new(0, 0, columns, rows),
+                    _ => (),
+                }
+
                 let msg = match *state.read().await {
                     State::Normal => handle_normal(mod_keys, event).await,
                     State::Insert => handle_insert(mod_keys, event).await,
@@ -110,7 +112,6 @@ async fn main() -> Result<()> {
                 last_tick = Instant::now();
             }
         };
-        Ok(())
     });
 
     //
@@ -125,7 +126,7 @@ async fn main() -> Result<()> {
 
         while let Some(msg) = input_rx.recv().await {
             match msg {
-                Msg::Insert(_) => todo!(),
+                Msg::Insert(_) => (),
                 Msg::NormalMode => *state.write().await = State::Normal,
                 Msg::InsertMode => *state.write().await = State::Insert,
                 Msg::TravelMode => *state.write().await = State::Travel,
@@ -133,14 +134,14 @@ async fn main() -> Result<()> {
                 Msg::ToParent => zipper = zipper.parent().await,
                 Msg::ToLeftSibling => zipper = zipper.move_left().await,
                 Msg::ToRightSibling => zipper = zipper.move_right().await,
-                Msg::Reset => todo!(),
-                Msg::ShutDown => todo!(),
-                Msg::PrevChar => todo!(),
-                Msg::PrevLine => todo!(),
-                Msg::NextLine => todo!(),
-                Msg::NextChar => todo!(),
-                Msg::ToLastChild => todo!(),
-                Msg::ToMiddleChild => todo!(),
+                Msg::Reset => (),
+                Msg::ShutDown => *state.write().await = State::ShutDown,
+                Msg::PrevChar => (),
+                Msg::PrevLine => (),
+                Msg::NextLine => (),
+                Msg::NextChar => (),
+                Msg::ToLastChild => (),
+                Msg::ToMiddleChild => (),
             }
         }
 

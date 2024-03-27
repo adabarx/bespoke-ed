@@ -7,14 +7,17 @@ use either::*;
 use ratatui::layout::Rect;
 use tokio::sync::RwLock;
 
-use crate::{primatives::{Char, Line, Root, Span, Text, Window}, ARW};
+use crate::{primatives::{AsyncWidget, Char, Line, Root, Span, Text, Window}, ARW};
 
-pub type DynZipper = Box<dyn Zipper + Send>;
+pub type DynZipper = Box<dyn Zipper + Send + Sync>;
 
 #[async_trait]
 pub trait Zipper {
     // async fn insert(&mut self, char: char) -> DynZipper;
     // async fn delete(&mut self);
+    async fn highlight(&self, hl: bool) {
+        let _ = hl;
+    }
 
     async fn parent(&self) -> DynZipper;
     async fn child(&self, index: usize) -> DynZipper;
@@ -137,6 +140,15 @@ impl LineZipper {
         let focus = siblings[row].clone();
         let children = focus.read().await.spans.clone();
 
+        let par_top = parent.focus.read().await.top;
+        let pos_relative = index.saturating_sub(par_top);
+
+        if pos_relative < par_top {
+            parent.focus.write().await.top -= par_top - pos_relative;
+        } else if pos_relative > par_top + parent.area.height as usize {
+            parent.focus.write().await.top += pos_relative - (par_top + parent.area.height as usize);
+        }
+
         Self {
             row,
             focus,
@@ -190,6 +202,28 @@ impl CharZipper {
             right: siblings[index + 1..].iter().cloned().collect(),
         }
     }
+
+    pub async fn move_left_or_cousin(&self) -> DynZipper {
+        if self.left.len() >  0 {
+            self.move_left().await
+        } else if self.left.len() == 0 && self.parent.left.len() > 0 {
+            let aunt = self.parent.move_left().await;
+            aunt.child(usize::MAX).await
+        } else {
+            Box::new(self.clone())
+        }
+    }
+
+    pub async fn move_right_or_cousin(&self) -> DynZipper {
+        if self.left.len() >  0 {
+            self.move_right().await
+        } else if self.right.len() == 0 && self.parent.right.len() > 0 {
+            let aunt = self.parent.move_right().await;
+            aunt.child(0).await
+        } else {
+            Box::new(self.clone())
+        }
+    }
 }
 
 
@@ -201,7 +235,8 @@ impl Zipper for RootZipper {
     async fn child(&self, index: usize) -> DynZipper {
         let the_kids = self.children.clone();
         let index = min(index, the_kids.len());
-        Box::new(WindowZipper::new(index, Left(self.clone())).await)
+        let child = WindowZipper::new(index, Left(self.clone())).await;
+        Box::new(child)
     }
 
     async fn move_left(&self) -> DynZipper {
@@ -214,7 +249,9 @@ impl Zipper for RootZipper {
 
 #[async_trait]
 impl Zipper for WindowZipper {
+    // TODO: highlight/no highlight
     async fn parent(&self) -> DynZipper {
+        self.focus.no_highlight().await;
         match *self.parent {
             Left(ref rz) => Box::new(rz.clone()) as DynZipper,
             Right(ref wz) => Box::new(wz.clone()) as DynZipper,
@@ -224,7 +261,7 @@ impl Zipper for WindowZipper {
         let the_kids = self.children.clone();
         let len = the_kids.len();
         if len == 0 { return Box::new(self.clone()) }
-        let index = min(index, len);
+        let index = min(index, len - 1);
         match the_kids[index] {
             Left(_) => Box::new(WindowZipper::new(index, Right(self.clone())).await),
             Right(_) => Box::new(TextZipper::new(index, self.clone()).await),
@@ -250,80 +287,134 @@ impl Zipper for WindowZipper {
 #[async_trait]
 impl Zipper for TextZipper {
     async fn parent(&self) -> DynZipper {
+        self.highlight(false).await;
+        self.parent.highlight(true).await;
         Box::new(self.parent.clone())
     }
     async fn child(&self, index: usize) -> DynZipper {
+        if self.children.len() == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
         let the_kids = self.children.clone();
         let index = min(index, the_kids.len());
-        Box::new(LineZipper::new(index, self.clone()).await)
+        let child = LineZipper::new(index, self.clone()).await;
+        child.highlight(true).await;
+        Box::new(child)
     }
 
     async fn move_left(&self) -> DynZipper {
         let index = self.left.len();
         if index == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
 
-        self.parent.child(index - 1).await
+        let child = self.parent.child(index - 1).await;
+        child.highlight(true).await;
+        child
     }
     async fn move_right(&self) -> DynZipper {
         let index = self.left.len();
         if self.right.len() == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
 
-        self.parent.child(index + 1).await
+        let child = self.parent.child(index + 1).await;
+        child.highlight(true).await;
+        child
     }
 }
 
 #[async_trait]
 impl Zipper for LineZipper {
     async fn parent(&self) -> DynZipper {
+        self.highlight(false).await;
+        self.parent.highlight(true).await;
         Box::new(self.parent.clone())
     }
     async fn child(&self, index: usize) -> DynZipper {
+        if self.children.len() == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
         let the_kids = self.children.clone();
         let index = min(index, the_kids.len());
-        Box::new(SpanZipper::new(index, self.clone()).await)
+        let child = SpanZipper::new(index, self.clone()).await;
+        child.highlight(true).await;
+        Box::new(child)
     }
 
     async fn move_left(&self) -> DynZipper {
         let index = self.left.len();
         if index == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
 
-        self.parent.child(index - 1).await
+        let child = self.parent.child(index - 1).await;
+        child.highlight(true).await;
+        child
     }
     async fn move_right(&self) -> DynZipper {
         let index = self.left.len();
         if self.right.len() == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
 
-        self.parent.child(index + 1).await
+        let child = self.parent.child(index + 1).await;
+        child.highlight(true).await;
+        child
+    }
+
+    async fn highlight(&self, hl: bool) {
+        if hl {
+            self.focus.highlight().await;
+        } else {
+            self.focus.no_highlight().await;
+        }
     }
 }
 
 #[async_trait]
 impl Zipper for SpanZipper {
     async fn parent(&self) -> DynZipper {
+        self.highlight(false).await;
+        self.parent.highlight(true).await;
         Box::new(self.parent.clone())
     }
     async fn child(&self, index: usize) -> DynZipper {
+        if self.children.len() == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
         let the_kids = self.children.clone();
         let index = min(index, the_kids.len());
-        Box::new(CharZipper::new(index, self.clone()).await)
+        let child = CharZipper::new(index, self.clone()).await;
+        child.highlight(true).await;
+        Box::new(child)
     }
 
     async fn move_left(&self) -> DynZipper {
         let index = self.left.len();
         if index == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
 
-        self.parent.child(index - 1).await
+        let sib = self.parent.child(index - 1).await;
+        sib.highlight(true).await;
+        sib
     }
     async fn move_right(&self) -> DynZipper {
         let index = self.left.len();
         if self.right.len() == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
 
-        self.parent.child(index + 1).await
+        let sib = self.parent.child(index + 1).await;
+        sib.highlight(true).await;
+        sib
+    }
+
+    async fn highlight(&self, hl: bool) {
+        if hl {
+            self.focus.highlight().await;
+        } else {
+            self.focus.no_highlight().await;
+        }
     }
 }
 #[async_trait]
 impl Zipper for CharZipper {
     async fn parent(&self) -> DynZipper {
+        self.highlight(false).await;
+        self.parent.highlight(true).await;
         Box::new(self.parent.clone())
     }
     async fn child(&self, index: usize) -> DynZipper {
@@ -334,14 +425,28 @@ impl Zipper for CharZipper {
     async fn move_left(&self) -> DynZipper {
         let index = self.left.len();
         if index == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
 
-        self.parent.child(index - 1).await
+        let sib = self.parent.child(index - 1).await;
+        sib.highlight(true).await;
+        sib
     }
     async fn move_right(&self) -> DynZipper {
         let index = self.left.len();
         if self.right.len() == 0 { return Box::new(self.clone()) }
+        self.highlight(false).await;
 
-        self.parent.child(index + 1).await
+        let sib = self.parent.child(index + 1).await;
+        sib.highlight(true).await;
+        sib
+    }
+
+    async fn highlight(&self, hl: bool) {
+        if hl {
+            self.focus.highlight().await;
+        } else {
+            self.focus.no_highlight().await;
+        }
     }
 }
 

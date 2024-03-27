@@ -15,45 +15,9 @@ use crate::ARW;
 #[async_trait]
 pub trait AsyncWidget {
     async fn async_render(&self) -> impl WidgetRef;
-    async fn highlight(&mut self);
-    async fn no_highlight(&mut self);
+    async fn highlight(&self);
+    async fn no_highlight(&self);
 }
-
-#[async_trait]
-pub trait ParentWidget<T>
-where
-    T: AsyncWidget + ?Sized + 'static + Send + Sync
-{
-    async fn get_children(&self) -> Vec<ARW<T>>;
-}
-
-pub trait Render: WidgetRef + Send {
-    fn get_width_height(&self) -> (u16, u16);
-}
-
-pub trait WindowChild {}
-
-impl WindowChild for Window {}
-impl WindowChild for Text {}
-
-impl ParentWidget<Char> for Span {
-    async fn get_children(&self) -> Vec<ARW<Char>> {
-        self.characters.clone()
-    }
-}
-
-impl ParentWidget<Span> for Line {
-    async fn get_children(&self) -> Vec<ARW<Span>> {
-        self.spans.clone()
-    }
-}
-
-impl ParentWidget<Line> for Text {
-    async fn get_children(&self) -> Vec<ARW<Line>> {
-        self.lines.clone()
-    }
-}
-
 
 #[derive(Default, Clone, PartialEq, Eq)]
 pub struct Char {
@@ -226,12 +190,12 @@ impl AsyncWidget for ARW<Char> {
         self.read().await.clone()
     }
 
-    async fn highlight(&mut self) {
+    async fn highlight(&self) {
         let mut wg = self.write().await;
         wg.style.bg = Some(Color::White);
         wg.style.fg = Some(Color::Black);
     }
-    async fn no_highlight(&mut self) {
+    async fn no_highlight(&self) {
         self.write().await.style = Style::default();
     }
 }
@@ -249,18 +213,18 @@ impl AsyncWidget for ARW<Span> {
         }
         characters.sort_by(|a, b| a.0.cmp(&b.0));
 
-        Box::new(SpanRender {
+        SpanRender {
             characters: characters.into_iter().map(|(_, render)| render).collect(),
-            style: self.style,
+            style: self.read().await.style,
             ..Default::default()
-        })
+        }
     }
-    async fn highlight(&mut self) {
+    async fn highlight(&self) {
         let mut wg = self.write().await;
         wg.style.bg = Some(Color::White);
         wg.style.fg = Some(Color::Black);
     }
-    async fn no_highlight(&mut self) {
+    async fn no_highlight(&self) {
         self.write().await.style = Style::default();
     }
 }
@@ -278,19 +242,19 @@ impl AsyncWidget for ARW<Line> {
         }
         spans.sort_by(|a, b| a.0.cmp(&b.0));
 
-        Box::new(LineRender {
+        LineRender {
             spans: spans.into_iter().map(|(_, render)| render).collect(),
-            style: self.style,
+            style: self.read().await.style,
             ..Default::default()
-        })
+        }
     }
 
-    async fn highlight(&mut self) {
+    async fn highlight(&self) {
         let mut wg = self.write().await;
         wg.style.bg = Some(Color::White);
         wg.style.fg = Some(Color::Black);
     }
-    async fn no_highlight(&mut self) {
+    async fn no_highlight(&self) {
         self.write().await.style = Style::default();
     }
 }
@@ -316,12 +280,12 @@ impl AsyncWidget for ARW<Text> {
             alignment: self.read().await.alignment.clone(),
         }
     }
-    async fn highlight(&mut self) {
+    async fn highlight(&self) {
         let mut wg = self.write().await;
         wg.style.bg = Some(Color::White);
         wg.style.fg = Some(Color::Black);
     }
-    async fn no_highlight(&mut self) {
+    async fn no_highlight(&self) {
         self.write().await.style = Style::default();
     }
 }
@@ -351,12 +315,12 @@ impl AsyncWidget for ARW<Window> {
         }
     }
 
-    async fn highlight(&mut self) {
+    async fn highlight(&self) {
         let mut wg = self.write().await;
         wg.style.bg = Some(Color::White);
         wg.style.fg = Some(Color::Black);
     }
-    async fn no_highlight(&mut self) {
+    async fn no_highlight(&self) {
         self.write().await.style = Style::default();
     }
 }
@@ -383,12 +347,12 @@ impl AsyncWidget for &'static RwLock<Root> {
         }
     }
 
-    async fn highlight(&mut self) {
+    async fn highlight(&self) {
         let mut wg = self.write().await;
         wg.style.bg = Some(Color::White);
         wg.style.fg = Some(Color::Black);
     }
-    async fn no_highlight(&mut self) {
+    async fn no_highlight(&self) {
         self.write().await.style = Style::default();
     }
 }
@@ -403,14 +367,14 @@ pub enum LayoutTypeRender {
 
 #[derive(Default)]
 pub struct SpanRender {
-    pub characters: Vec<DynRender>,
+    pub characters: Vec<Char>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
 
 #[derive(Default)]
 pub struct LineRender {
-    pub spans: Vec<DynRender>,
+    pub spans: Vec<SpanRender>,
     pub style: Style,
     pub alignment: Option<Alignment>,
 }
@@ -436,12 +400,6 @@ impl WidgetRef for Char {
     }
 }
 
-impl Render for Char {
-    fn get_width_height(&self) -> (u16, u16) {
-        (1, 1)
-    }
-}
-
 impl WidgetRef for SpanRender {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
@@ -464,12 +422,6 @@ impl WidgetRef for SpanRender {
     }
 }
 
-impl Render for SpanRender {
-    fn get_width_height(&self) -> (u16, u16) {
-        (self.characters.len() as u16, 1)
-    }
-}
-
 impl WidgetRef for LineRender {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
@@ -482,12 +434,12 @@ impl WidgetRef for LineRender {
         buf.set_style(area, self.style);
         let mut offset: u16 = 0;
         for span in self.spans.iter() {
-            let (width, height) = span.get_width_height();
+            let width = span.characters.len() as u16;
             let area = Rect {
                 x: area.x + offset,
                 y: area.y,
                 width,
-                height,
+                height: 1,
             };
             span.render_ref(area, buf);
             offset += width;
@@ -511,7 +463,7 @@ impl WidgetRef for WindowRender {
                         area.width,
                         offset
                     );
-                    for_both!(child, c => c.render_ref(area, buf)
+                    for_both!(child, c => c.render_ref(area, buf))
                 }
             },
             SplitDirection::Vertical => {
