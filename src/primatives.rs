@@ -530,6 +530,7 @@ impl WidgetRef for WindowRender {
 impl WidgetRef for TextRender {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
+        let width = area.width;
         for (i, line) in self.lines.iter().enumerate() {
             let area = Rect {
                 x: area.x,
@@ -539,14 +540,8 @@ impl WidgetRef for TextRender {
                     .fold(0_u16, |acc, sp| acc + sp.characters.len() as u16),
                 height: 1,
             };
-            let line_width = line.spans.iter().fold(0, |acc, sp| acc + sp.characters.len());
-            let tail = Rect {
-                x: area.x + line_width as u16,
-                width: area.width - line_width as u16,
-                ..area
-            };
+            Clear.render_ref(Rect { width, ..area }, buf);
             line.render_ref(area, buf);
-            Clear.render_ref(tail, buf);
         }
     }
 }
