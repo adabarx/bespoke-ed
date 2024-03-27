@@ -22,7 +22,7 @@ mod zipper;
 mod flipflop;
 mod input;
 
-use primatives::{Window, WindowRender, SplitDirection, Text, AsyncWidget};
+use primatives::{WindowRender, SplitDirection, Text, AsyncWidget};
 use zipper::DynZipper;
 use zipper::RootZipper;
 use tokio::time::{sleep, Instant, Duration};
@@ -66,9 +66,7 @@ async fn main() -> Result<()> {
     let root: &'static RwLock<Root> = Box::leak(Box::new(
         RwLock::new(Root::new(SplitDirection::Vertical, terminal.get_frame().size()))
     ));
-    root.write().await.children.push(
-        Arc::new(RwLock::new(Window::new(SplitDirection::Vertical)))
-    );
+    root.write().await.add_window(SplitDirection::Vertical, 0);
     root.write().await.children[0].write().await.children.push(
         Right(Arc::new(RwLock::new(Text::raw(content))))
     );

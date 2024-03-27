@@ -36,7 +36,8 @@ pub struct Line {
 
 #[derive(Default, Clone)]
 pub struct Text {
-    pub top: usize,
+    pub scroll_offset: usize,
+    pub height: usize,
     pub lines: Vec<ARW<Line>>,
     pub style: Style,
     pub alignment: Option<Alignment>,
@@ -66,19 +67,33 @@ impl Root {
             style: Style::default()
         }
     }
+
+    pub fn add_window(&mut self, split_dir: SplitDirection, index: usize) {
+        let new_child = Arc::new(RwLock::new(Window::new(split_dir, self.area)));
+        if index >= self.children.len() {
+            self.children.push(new_child.clone());
+        }
+        let mut children = self.children.clone();
+        let mut tmp = children.drain(index..).collect();
+        children.push(new_child);
+        children.append(&mut tmp);
+        self.children = children;
+    }
 }
 
 #[derive(Clone)]
 pub struct Window {
+    pub area: Rect,
     pub style: Style,
     pub split_dir: SplitDirection,
     pub children: Vec<Either<ARW<Window>, ARW<Text>>>,
 }
 
 impl Window {
-    pub fn new(split_dir: SplitDirection) -> Self {
+    pub fn new(split_dir: SplitDirection, area: Rect) -> Self {
         Self {
             split_dir,
+            area,
             children: Vec::new(),
             style: Style::default()
         }
@@ -260,8 +275,11 @@ impl AsyncWidget for ARW<Line> {
 impl AsyncWidget for ARW<Text> {
     async fn async_render(&self) -> TextRender {
         let mut set = JoinSet::new();
+        let offset = self.read().await.scroll_offset;
         for (i, line) in self.read().await.lines.iter().cloned().enumerate() {
-            set.spawn(async move { (i, line.async_render().await) });
+            if i >= offset {
+                set.spawn(async move { (i, line.async_render().await) });
+            }
         }
 
         let mut lines = Vec::new();
@@ -271,7 +289,7 @@ impl AsyncWidget for ARW<Text> {
         lines.sort_by(|a, b| a.0.cmp(&b.0));
 
         TextRender { 
-            top: self.read().await.top.clone(),
+            top: self.read().await.scroll_offset.clone(),
             lines: lines.into_iter().map(|(_, render)| render).collect(),
             style: self.read().await.style.clone(),
             alignment: self.read().await.alignment.clone(),
