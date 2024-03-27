@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use either::*;
 use tokio::{sync::RwLock, task::JoinSet};
 use ratatui::{
-    buffer::Buffer, layout::{Alignment, Position, Rect}, style::{Color, Style}, widgets::WidgetRef
+    buffer::Buffer, layout::{Alignment, Position, Rect}, style::{Color, Style}, widgets::{Clear, WidgetRef}
 };
 
 use crate::ARW;
@@ -501,7 +501,14 @@ impl WidgetRef for TextRender {
                     .fold(0_u16, |acc, sp| acc + sp.characters.len() as u16),
                 height: 1,
             };
+            let line_width = line.spans.iter().fold(0, |acc, sp| acc + sp.characters.len());
+            let tail = Rect {
+                x: area.x + line_width as u16,
+                width: area.width - line_width as u16,
+                ..area
+            };
             line.render_ref(area, buf);
+            Clear.render_ref(tail, buf);
             line_number += 1;
             i += 1;
         }

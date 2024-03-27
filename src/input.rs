@@ -1,7 +1,6 @@
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
+use crossterm::event::{Event, KeyCode, ModifierKeyCode};
 use tokio::sync::RwLock;
 
-use crate::{primatives::Char, State};
 
 // pub async fn input_listener(
 //     mod_keys: &'static RwLock<Vec<ModifierKeyCode>>,
@@ -45,7 +44,7 @@ pub enum Msg {
 }
 
 pub async fn handle_normal(
-    mod_keys: &'static RwLock<Vec<ModifierKeyCode>>,
+    _mod_keys: &'static RwLock<Vec<ModifierKeyCode>>,
     input: Event
 ) -> Option<Msg> {
     // let shift = mod_keys.read().await.iter().find(|&k| *k == ModifierKeyCode::LeftShift || *k == ModifierKeyCode::RightShift).is_some();
