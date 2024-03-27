@@ -71,7 +71,7 @@ impl Root {
     pub fn add_window(&mut self, split_dir: SplitDirection, index: usize) {
         let new_child = Arc::new(RwLock::new(Window::new(split_dir, self.area)));
         if index >= self.children.len() {
-            self.children.push(new_child.clone());
+            self.children.push(Arc::new(RwLock::new(Window::new(split_dir, self.area))));
         }
         let mut children = self.children.clone();
         let mut tmp = children.drain(index..).collect();
@@ -96,6 +96,31 @@ impl Window {
             area,
             children: Vec::new(),
             style: Style::default()
+        }
+    }
+
+    pub fn add_window(&mut self, split_dir: SplitDirection, index: usize) {
+        if index >= self.children.len() {
+            self.children.push(Left(Arc::new(RwLock::new(Window::new(split_dir, self.area)))));
+        }
+        let mut children = self.children.clone();
+        let mut tmp = children.drain(index..).collect();
+        children.push(Left(Arc::new(RwLock::new(Window::new(split_dir, self.area)))));
+        children.append(&mut tmp);
+        self.children = children;
+    }
+
+    pub fn add_text(&mut self, content: String, index: usize) {
+        let mut text = Text::raw(content);
+        text.height = self.area.height.into();
+        if index >= self.children.len() {
+            self.children.push(Right(Arc::new(RwLock::new(text))));
+        } else {
+            let mut children = self.children.clone();
+            let mut tmp = children.drain(index..).collect();
+            children.push(Right(Arc::new(RwLock::new(text))));
+            children.append(&mut tmp);
+
         }
     }
 }
@@ -276,8 +301,9 @@ impl AsyncWidget for ARW<Text> {
     async fn async_render(&self) -> TextRender {
         let mut set = JoinSet::new();
         let offset = self.read().await.scroll_offset;
+        let height = self.read().await.height;
         for (i, line) in self.read().await.lines.iter().cloned().enumerate() {
-            if i >= offset {
+            if i >= offset && i < offset + height {
                 set.spawn(async move { (i, line.async_render().await) });
             }
         }
@@ -504,16 +530,10 @@ impl WidgetRef for WindowRender {
 impl WidgetRef for TextRender {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
-        let mut line_number: usize = self.top;
-        let mut i = 0;
-        loop {
-            if i == area.height { break }
-            let line = self.lines.get(line_number);
-            if line.is_none() { break }
-            let line = line.unwrap();
+        for (i, line) in self.lines.iter().enumerate() {
             let area = Rect {
                 x: area.x,
-                y: area.y + i,
+                y: area.y + i as u16,
                 width: line.spans
                     .iter()
                     .fold(0_u16, |acc, sp| acc + sp.characters.len() as u16),
@@ -527,8 +547,6 @@ impl WidgetRef for TextRender {
             };
             line.render_ref(area, buf);
             Clear.render_ref(tail, buf);
-            line_number += 1;
-            i += 1;
         }
     }
 }

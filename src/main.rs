@@ -4,7 +4,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::fs;
 
-use either::Either::Right;
 use input::handle_travel;
 use input::{handle_insert, handle_normal};
 use primatives::Root;
@@ -22,7 +21,7 @@ mod zipper;
 mod flipflop;
 mod input;
 
-use primatives::{WindowRender, SplitDirection, Text, AsyncWidget};
+use primatives::{WindowRender, SplitDirection, AsyncWidget};
 use zipper::DynZipper;
 use zipper::RootZipper;
 use tokio::time::{sleep, Instant, Duration};
@@ -67,9 +66,8 @@ async fn main() -> Result<()> {
         RwLock::new(Root::new(SplitDirection::Vertical, terminal.get_frame().size()))
     ));
     root.write().await.add_window(SplitDirection::Vertical, 0);
-    root.write().await.children[0].write().await.children.push(
-        Right(Arc::new(RwLock::new(Text::raw(content))))
-    );
+    root.write().await.children[0]
+        .write().await.add_text(content, 0);
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Msg>();
     let (render_tx, mut render_rx) = mpsc::unbounded_channel::<WindowRender>();

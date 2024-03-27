@@ -102,10 +102,10 @@ pub async fn handle_travel(
             KeyCode::Esc => Some(Msg::NormalMode),
 
             KeyCode::Char('i') if ctrl => Some(Msg::ToFirstChild),
-            KeyCode::Char('p') => Some(Msg::ToParent),
-            KeyCode::Char('l') => Some(Msg::ToLeftSibling),
-            KeyCode::Char('r') => Some(Msg::ToRightSibling),
-            KeyCode::Char('i') => Some(Msg::ToFirstChild),
+            KeyCode::Char('k') => Some(Msg::ToParent),
+            KeyCode::Char('h') => Some(Msg::ToLeftSibling),
+            KeyCode::Char('l') => Some(Msg::ToRightSibling),
+            KeyCode::Char('j') => Some(Msg::ToFirstChild),
             KeyCode::Char('a') => Some(Msg::ToLastChild),
             KeyCode::Char('m') => Some(Msg::ToMiddleChild),
 
