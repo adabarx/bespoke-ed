@@ -138,12 +138,12 @@ impl LineZipper {
         let focus = siblings[row].clone();
         let children = focus.read().await.spans.clone();
 
-        let par_top = parent.focus.read().await.scroll_offset;
-        let pos_relative = index.saturating_sub(par_top);
+        let scroll_offset = parent.focus.read().await.scroll_offset;
+        let cursor_pos_relative = index.saturating_sub(scroll_offset);
 
-        if pos_relative < par_top {
+        if cursor_pos_relative < scroll_offset {
             parent.focus.write().await.scroll_offset -= 1;
-        } else if pos_relative > par_top + parent.area.height as usize {
+        } else if cursor_pos_relative >= scroll_offset + parent.area.height as usize {
             parent.focus.write().await.scroll_offset += 1;
         }
 

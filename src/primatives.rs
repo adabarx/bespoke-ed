@@ -1,4 +1,4 @@
-use std::{cmp::min, sync::Arc, u16};
+use std::{cmp::min, sync::Arc, u16, usize};
 
 use async_trait::async_trait;
 use either::*;
@@ -12,8 +12,8 @@ use crate::ARW;
 #[async_trait]
 pub trait AsyncWidget {
     async fn async_render(&self) -> impl WidgetRef;
-    async fn highlight(&self);
-    async fn no_highlight(&self);
+    async fn highlight(&self) {}
+    async fn no_highlight(&self) {}
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -25,13 +25,11 @@ pub struct Char {
 #[derive(Default, Clone)]
 pub struct Span {
     pub characters: Vec<ARW<Char>>,
-    pub style: Style,
 }
 
 #[derive(Default, Clone)]
 pub struct Line {
     pub spans: Vec<ARW<Span>>,
-    pub style: Style,
 }
 
 #[derive(Default, Clone)]
@@ -39,7 +37,6 @@ pub struct Text {
     pub scroll_offset: usize,
     pub height: usize,
     pub lines: Vec<ARW<Line>>,
-    pub style: Style,
     pub alignment: Option<Alignment>,
 }
 
@@ -53,7 +50,6 @@ pub enum SplitDirection {
 #[derive(Clone)]
 pub struct Root {
     pub area: Rect,
-    pub style: Style,
     pub split_dir: SplitDirection,
     pub children: Vec<ARW<Window>>,
 }
@@ -64,18 +60,16 @@ impl Root {
             split_dir,
             area,
             children: Vec::new(),
-            style: Style::default()
         }
     }
 
     pub fn add_window(&mut self, split_dir: SplitDirection, index: usize) {
-        let new_child = Arc::new(RwLock::new(Window::new(split_dir, self.area)));
         if index >= self.children.len() {
             self.children.push(Arc::new(RwLock::new(Window::new(split_dir, self.area))));
         }
         let mut children = self.children.clone();
         let mut tmp = children.drain(index..).collect();
-        children.push(new_child);
+        children.push(Arc::new(RwLock::new(Window::new(split_dir, self.area))));
         children.append(&mut tmp);
         self.children = children;
     }
@@ -84,7 +78,6 @@ impl Root {
 #[derive(Clone)]
 pub struct Window {
     pub area: Rect,
-    pub style: Style,
     pub split_dir: SplitDirection,
     pub children: Vec<Either<ARW<Window>, ARW<Text>>>,
 }
@@ -95,7 +88,6 @@ impl Window {
             split_dir,
             area,
             children: Vec::new(),
-            style: Style::default()
         }
     }
 
@@ -135,7 +127,6 @@ impl Span {
                     Char { char: ch, style: Style::default() }
                 )))
                 .collect(),
-            style: Style::default(),
         }
     }
 
@@ -252,17 +243,18 @@ impl AsyncWidget for ARW<Span> {
 
         SpanRender {
             characters: characters.into_iter().map(|(_, render)| render).collect(),
-            style: self.read().await.style,
             ..Default::default()
         }
     }
     async fn highlight(&self) {
-        let mut wg = self.write().await;
-        wg.style.bg = Some(Color::White);
-        wg.style.fg = Some(Color::Black);
+        for char in self.read().await.characters.iter().cloned() {
+            tokio::spawn(async move { char.highlight().await });
+        }
     }
     async fn no_highlight(&self) {
-        self.write().await.style = Style::default();
+        for char in self.read().await.characters.iter().cloned() {
+            tokio::spawn(async move { char.no_highlight().await });
+        }
     }
 }
 
@@ -281,31 +273,35 @@ impl AsyncWidget for ARW<Line> {
 
         LineRender {
             spans: spans.into_iter().map(|(_, render)| render).collect(),
-            style: self.read().await.style,
             ..Default::default()
         }
     }
 
     async fn highlight(&self) {
-        let mut wg = self.write().await;
-        wg.style.bg = Some(Color::White);
-        wg.style.fg = Some(Color::Black);
+        for span in self.read().await.spans.iter().cloned() {
+            tokio::spawn(async move { span.highlight().await });
+        }
     }
     async fn no_highlight(&self) {
-        self.write().await.style = Style::default();
+        for span in self.read().await.spans.iter().cloned() {
+            tokio::spawn(async move { span.no_highlight().await });
+        }
     }
 }
 
 #[async_trait]
 impl AsyncWidget for ARW<Text> {
     async fn async_render(&self) -> TextRender {
+        let copy = self.read().await.clone();
+
         let mut set = JoinSet::new();
-        let offset = self.read().await.scroll_offset;
-        let height = self.read().await.height;
-        for (i, line) in self.read().await.lines.iter().cloned().enumerate() {
-            if i >= offset && i < offset + height {
-                set.spawn(async move { (i, line.async_render().await) });
-            }
+        for (i, line) in copy.lines.iter()
+            .cloned()
+            .enumerate()
+            .filter(|(i, _)| *i >= copy.scroll_offset && *i < copy.scroll_offset + copy.height - 1) 
+        {
+            let i = i + 1;
+            set.spawn(async move { (LineNumber::new(i), line.async_render().await) });
         }
 
         let mut lines = Vec::new();
@@ -315,19 +311,9 @@ impl AsyncWidget for ARW<Text> {
         lines.sort_by(|a, b| a.0.cmp(&b.0));
 
         TextRender { 
-            top: self.read().await.scroll_offset.clone(),
-            lines: lines.into_iter().map(|(_, render)| render).collect(),
-            style: self.read().await.style.clone(),
-            alignment: self.read().await.alignment.clone(),
+            lines,
+            alignment: copy.alignment.clone(),
         }
-    }
-    async fn highlight(&self) {
-        let mut wg = self.write().await;
-        wg.style.bg = Some(Color::White);
-        wg.style.fg = Some(Color::Black);
-    }
-    async fn no_highlight(&self) {
-        self.write().await.style = Style::default();
     }
 }
 
@@ -350,19 +336,9 @@ impl AsyncWidget for ARW<Window> {
         }
         children.sort_by(|a, b| a.0.cmp(&b.0));
         WindowRender {
-            style: snapshot.style,
             split_dir: snapshot.split_dir,
             children: children.into_iter().map(|c| c.1).collect()
         }
-    }
-
-    async fn highlight(&self) {
-        let mut wg = self.write().await;
-        wg.style.bg = Some(Color::White);
-        wg.style.fg = Some(Color::Black);
-    }
-    async fn no_highlight(&self) {
-        self.write().await.style = Style::default();
     }
 }
 
@@ -382,19 +358,9 @@ impl AsyncWidget for &'static RwLock<Root> {
         }
         children.sort_by(|a, b| a.0.cmp(&b.0));
         WindowRender {
-            style: snapshot.style,
             split_dir: snapshot.split_dir,
             children: children.into_iter().map(|c| Left(c.1)).collect()
         }
-    }
-
-    async fn highlight(&self) {
-        let mut wg = self.write().await;
-        wg.style.bg = Some(Color::White);
-        wg.style.fg = Some(Color::Black);
-    }
-    async fn no_highlight(&self) {
-        self.write().await.style = Style::default();
     }
 }
 
@@ -409,29 +375,60 @@ pub enum LayoutTypeRender {
 #[derive(Default)]
 pub struct SpanRender {
     pub characters: Vec<Char>,
-    pub style: Style,
     pub alignment: Option<Alignment>,
 }
 
 #[derive(Default)]
 pub struct LineRender {
     pub spans: Vec<SpanRender>,
-    pub style: Style,
     pub alignment: Option<Alignment>,
 }
 
 #[derive(Default)]
 pub struct TextRender {
-    pub top: usize,
-    pub lines: Vec<LineRender>,
-    pub style: Style,
+    pub lines: Vec<(LineNumber, LineRender)>,
     pub alignment: Option<Alignment>,
 }
 
 pub struct WindowRender {
-    style: Style,
     split_dir: SplitDirection,
     children: Vec<Either<WindowRender, TextRender>>,
+}
+
+#[derive(Default, PartialEq, Eq,)] 
+pub struct LineNumber {
+    num: usize,
+    str: String,
+}
+
+impl LineNumber {
+    pub fn new(number: usize) -> LineNumber {
+        LineNumber {
+            num: number,
+            str: number.to_string()
+        }
+    }
+}
+
+impl PartialOrd for LineNumber {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.num.cmp(&other.num))
+    }
+}
+
+impl Ord for LineNumber {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+impl WidgetRef for LineNumber {
+    fn render_ref(&self,area:Rect,buf: &mut Buffer) {
+        Clear.render_ref(area, buf);
+        for (i, ch) in self.str.chars().enumerate() {
+            buf.get_mut(area.x + i as u16, area.y).set_symbol(&ch.to_string());
+        }
+    }
 }
 
 impl WidgetRef for Char {
@@ -444,12 +441,6 @@ impl WidgetRef for Char {
 impl WidgetRef for SpanRender {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
         // height is already 1
-        if self.characters.len() == 0 {
-            let area = Rect { width: 1, ..area };
-            buf.set_style(area, self.style);
-            return;
-        }
-        buf.set_style(area, self.style);
         let mut i: u16 = 0;
         for ch in self.characters.iter() {
             let char_area = Rect {
@@ -468,14 +459,6 @@ impl WidgetRef for SpanRender {
 
 impl WidgetRef for LineRender {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
-        // height is already 1
-        let len = self.spans.len();
-        if len == 0 {
-            let area = Rect { width: 1, ..area };
-            buf.set_style(area, self.style);
-            return;
-        }
-        buf.set_style(area, self.style);
         let mut offset: u16 = 0;
         for span in self.spans.iter() {
             let width = span.characters.len() as u16;
@@ -491,9 +474,31 @@ impl WidgetRef for LineRender {
     }
 }
 
+impl WidgetRef for TextRender {
+    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+        for (i, (ln_num, line)) in self.lines.iter().enumerate() {
+            let line_area = Rect {
+                height: 1,
+                y: area.y + i as u16,
+                ..area
+            };
+            let num_area = Rect {
+                width: 4,
+                ..line_area
+            };
+            let content_area = Rect {
+                x: area.x + 4,
+                ..line_area
+            }.intersection(area);
+
+            ln_num.render_ref(num_area, buf);
+            line.render_ref(content_area, buf);
+        }
+    }
+}
+
 impl WidgetRef for WindowRender {
     fn render_ref(&self,area:Rect,buf: &mut Buffer) {
-        buf.set_style(area, self.style);
         let windows: u16 = self.children.len().try_into().unwrap();
         if windows == 0 { return; }
         match self.split_dir {
@@ -523,25 +528,6 @@ impl WidgetRef for WindowRender {
                     for_both!(child, c => c.render_ref(area, buf))
                 }
             },
-        }
-    }
-}
-
-impl WidgetRef for TextRender {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        buf.set_style(area, self.style);
-        let width = area.width;
-        for (i, line) in self.lines.iter().enumerate() {
-            let area = Rect {
-                x: area.x,
-                y: area.y + i as u16,
-                width: line.spans
-                    .iter()
-                    .fold(0_u16, |acc, sp| acc + sp.characters.len() as u16),
-                height: 1,
-            };
-            Clear.render_ref(Rect { width, ..area }, buf);
-            line.render_ref(area, buf);
         }
     }
 }

@@ -4,26 +4,23 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::fs;
 
-use input::handle_travel;
-use input::{handle_insert, handle_normal};
+use control::control_thread_init;
+use input::input_thread_init;
 use primatives::Root;
-use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use clap::Parser;
-use crossterm::event::{self, Event, ModifierKeyCode};
 use anyhow::Result;
-use input::Msg;
+use input::Command;
 
 mod tui;
 mod primatives;
 mod zipper;
 mod flipflop;
 mod input;
+mod control;
 
 use primatives::{WindowRender, SplitDirection, AsyncWidget};
-use zipper::DynZipper;
-use zipper::RootZipper;
 use tokio::time::{sleep, Instant, Duration};
 
 const BILLIE: u64 = 1_000_000_000;
@@ -61,7 +58,6 @@ async fn main() -> Result<()> {
     let content = fs::read_to_string(path.clone()).expect("File Doesn't Exist");
 
     let state: &'static RwLock<State> = Box::leak(Box::new(RwLock::new(State::Normal)));
-    let mod_keys: &'static RwLock<Vec<ModifierKeyCode>> = Box::leak(Box::new(RwLock::new(Vec::new())));
     let root: &'static RwLock<Root> = Box::leak(Box::new(
         RwLock::new(Root::new(SplitDirection::Vertical, terminal.get_frame().size()))
     ));
@@ -69,7 +65,7 @@ async fn main() -> Result<()> {
     root.write().await.children[0]
         .write().await.add_text(content, 0);
 
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Msg>();
+    let (input_tx, input_rx) = mpsc::unbounded_channel::<Command>();
     let (render_tx, mut render_rx) = mpsc::unbounded_channel::<WindowRender>();
 
     //
@@ -79,36 +75,7 @@ async fn main() -> Result<()> {
     //     3. sends the commands to the control thread
     //
 
-    tokio::spawn(async move {
-        let tick_rate = Duration::from_nanos(CONTROL_DEADLINE);
-        let mut last_tick = Instant::now();
-        loop {
-            if *state.read().await == State::ShutDown { break }
-
-            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-            if crossterm::event::poll(timeout).unwrap() {
-                let event = event::read().unwrap();
-                
-                match event {
-                    Event::FocusLost => (),
-                    Event::FocusGained => (),
-                    Event::Resize(columns, rows) => root.write().await.area = Rect::new(0, 0, columns, rows),
-                    _ => (),
-                }
-
-                let msg = match *state.read().await {
-                    State::Normal => handle_normal(mod_keys, event).await,
-                    State::Insert => handle_insert(mod_keys, event).await,
-                    State::Travel => handle_travel(mod_keys, event).await,
-                    State::ShutDown => break,
-                };
-                if let Some(msg) = msg {
-                    input_tx.send(msg).unwrap();
-                }
-                last_tick = Instant::now();
-            }
-        };
-    });
+    input_thread_init(state, root, input_tx, CONTROL_DEADLINE);
 
     //
     // control thread:
@@ -117,31 +84,7 @@ async fn main() -> Result<()> {
     //     3. zippers modify the atomic tree
     //
 
-    tokio::spawn(async move {
-        let mut zipper: DynZipper = Box::new(RootZipper::new(root).await);
-
-        while let Some(msg) = input_rx.recv().await {
-            match msg {
-                Msg::Insert(_) => (),
-                Msg::NormalMode => *state.write().await = State::Normal,
-                Msg::InsertMode => *state.write().await = State::Insert,
-                Msg::TravelMode => *state.write().await = State::Travel,
-                Msg::ToFirstChild => zipper = zipper.child(0).await,
-                Msg::ToParent => zipper = zipper.parent().await,
-                Msg::ToLeftSibling => zipper = zipper.move_left().await,
-                Msg::ToRightSibling => zipper = zipper.move_right().await,
-                Msg::Reset => (),
-                Msg::ShutDown => *state.write().await = State::ShutDown,
-                Msg::PrevChar => (),
-                Msg::PrevLine => (),
-                Msg::NextLine => (),
-                Msg::NextChar => (),
-                Msg::ToLastChild => (),
-                Msg::ToMiddleChild => (),
-            }
-        }
-
-    });
+    control_thread_init(state, root, input_rx);
 
     //
     // build thread:
